@@ -1,0 +1,21 @@
+# 依赖
+node_modules/
+
+# 运行时产物
+*.log
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+
+# 本地凭据（插件本身把凭据存到 $DSH_HOME/.credentials.yaml，不在本仓库）
+.env
+.env.local
+*.cookie.txt
+cookie*.txt
+
+# 临时文件
+*.tmp
+*.bak

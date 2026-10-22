@@ -1,0 +1,8 @@
+# dsh-doubao-image — bundle patch layer
+#
+# 把本插件声明成 Cordis loader 条目，使包成为标准 profile bundle：
+# `dsh plugin --profile <p> add github:LinLing4285/dsh-doubao-image` 即可安装并挂载，
+# 无需手工编辑 cordis.patch.yml。
+- insert:
+    - id: doubao-image
+      name: 'dsh-doubao-image'
