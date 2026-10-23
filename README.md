@@ -1,8 +1,13 @@
 # dsh-doubao-image-free
 
+[![npm](https://img.shields.io/npm/v/dsh-doubao-image-free)](https://www.npmjs.com/package/dsh-doubao-image-free)
+
 把**网页版豆包**与**网页版 ChatGPT 免费账户**的生图能力接进 [DeepSeek Harness](https://github.com/deepseek-ai) 的插件。在插件设置页里扫码或粘贴凭据即可使用，带自建画廊、灵感库与 tldraw 工作台。
 
 > **和 npm 上的 `dsh-doubao-image` 不是同一个项目。** 那个包的作者是 `xt765`，注册 `doubao_generate_image` / `doubao_image_status`，依赖 Tabbit CLI 驱动浏览器。本项目注册 `doubao_image` / `gpt_image`，走纯 HTTP，不依赖任何外部 CLI。安装时请认准包名带 `-free` 后缀。
+>
+> - npm：<https://www.npmjs.com/package/dsh-doubao-image-free>
+> - GitHub：<https://github.com/LinLing4285/dsh-doubao-image-free>
 
 > 面向个人自用。走的是网页端私有接口的协议复刻，**可能违反平台服务条款**，请自行评估账号风险。
 
@@ -32,11 +37,21 @@
 
 ## 安装
 
+两条安装路径，**优先用 npm**（快、不依赖 git）：
+
 ```
+# npm（推荐）：约 5 秒
+dsh plugin --profile <profile> add dsh-doubao-image-free
+
+# GitHub：约 11 秒，需要本机有 git
 dsh plugin --profile <profile> add github:LinLing4285/dsh-doubao-image-free
 ```
 
 `<profile>` 取 `desktop`（桌面端）或 `web`（命令行 `dsh web`）。`dsh plugin` 会自动把包写进 profile 的 `dependencies` 与 `dsh.profile.bundles`。
+
+> **桌面端用户注意**：桌面端（Electron）**不自带 PATH 里的 `dsh` 命令**。它的 CLI 在 `D:\DSH2\resources\runtime\cli\bin\dsh.cmd`（路径随安装位置变化），需要写完整路径调用。若用 `github:` 方式安装，还要求 `git` 在 PATH 里、且 **DSH 已完全退出**（否则 profile 的 `package.json` 被占用会失败）。
+>
+> 安装失败的常见原因是 `github:` 拉取不通时 DSH 会**回退到 npm 上的同名包**。本项目已改名为 `dsh-doubao-image-free` 避开这个坑；若你装到的是 `dsh-doubao-image`，那是 `xt765` 的另一个项目（见文首说明）。
 
 安装后到「设置 → 插件 → dsh-doubao-image-free」完成登录。
 
