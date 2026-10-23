@@ -2,6 +2,8 @@
 
 把**网页版豆包**与**网页版 ChatGPT 免费账户**的生图能力接进 [DeepSeek Harness](https://github.com/deepseek-ai) 的插件。在插件设置页里扫码或粘贴凭据即可使用，带自建画廊、灵感库与 tldraw 工作台。
 
+> **和 npm 上的 `dsh-doubao-image` 不是同一个项目。** 那个包的作者是 `xt765`，注册 `doubao_generate_image` / `doubao_image_status`，依赖 Tabbit CLI 驱动浏览器。本项目注册 `doubao_image` / `gpt_image`，走纯 HTTP，不依赖任何外部 CLI。安装时请认准包名带 `-free` 后缀。
+
 > 面向个人自用。走的是网页端私有接口的协议复刻，**可能违反平台服务条款**，请自行评估账号风险。
 
 ## 功能
@@ -56,6 +58,8 @@ dsh plugin --profile <profile> add github:LinLing4285/dsh-doubao-image-free
 
 - `dsh-doubao-image/doubao-session` — `{ cookieHeader, device, updatedAt }`（`device` 是豆包风控需要的设备指纹，登录时自动采集）
 - `dsh-doubao-image/gpt-session` — `{ accessToken, cookieHeader, oaiDeviceId, updatedAt }`
+
+> 这两条 scope 用的是改名前的 `dsh-doubao-image`，**故意没有跟着包名改成 `-free`**：scope 是用户数据的命名空间，改了等于把老用户的登录态全部作废。画廊落盘路径 `$DSH_HOME/storages/dsh-doubao-image/gallery.json` 同理。
 
 服务不可用时插件降级为「设置页可看、工具报错」，不会崩。
 
