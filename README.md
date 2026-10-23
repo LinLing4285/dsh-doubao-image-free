@@ -1,4 +1,4 @@
-# dsh-doubao-image
+# dsh-doubao-image-free
 
 把**网页版豆包**与**网页版 ChatGPT 免费账户**的生图能力接进 [DeepSeek Harness](https://github.com/deepseek-ai) 的插件。在插件设置页里扫码或粘贴凭据即可使用，带自建画廊、灵感库与 tldraw 工作台。
 
@@ -31,12 +31,12 @@
 ## 安装
 
 ```
-dsh plugin --profile <profile> add github:LinLing4285/dsh-doubao-image
+dsh plugin --profile <profile> add github:LinLing4285/dsh-doubao-image-free
 ```
 
 `<profile>` 取 `desktop`（桌面端）或 `web`（命令行 `dsh web`）。`dsh plugin` 会自动把包写进 profile 的 `dependencies` 与 `dsh.profile.bundles`。
 
-安装后到「设置 → 插件 → dsh-doubao-image」完成登录。
+安装后到「设置 → 插件 → dsh-doubao-image-free」完成登录。
 
 > **Host 半改动不会热重载**。`index.js` 与 `lib/*.mjs` 只在 app 启动时加载一次（Node ESM 按 URL 缓存模块命名空间，禁用/启用插件只切换 cordis fiber）。改完必须**完全退出 DSH 再重开**，刷新页面不够。Client 半（`client*.js`）刷新即可，但 chunk 有缓存坑，见下文。
 
@@ -113,7 +113,7 @@ lib/inspiration.mjs    灵感库数据集加载 + 远程图片代理
 
 ```js
 window.__ModuleLoader__.load({
-  id: "dsh-doubao-image",      // 必须是包名
+  id: "dsh-doubao-image-free",      // 必须是包名
   chunk: "client.gallery.js",  // 必须是文件名
   factory: (require) => { /* ... */ exports.Mount = Mount; },
 });

@@ -24,7 +24,7 @@
  * 不用 `shared.gallery`——见文件末尾 `readFavorites` 的说明。
  */
 window.__ModuleLoader__.load({
-  id: "dsh-doubao-image",
+  id: "dsh-doubao-image-free",
   chunk: "client.inspiration.js",
   factory: (require) => {
     var module = { exports: {} };

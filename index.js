@@ -48,7 +48,7 @@ export const name = "doubao-image";
 export const inject = ["tools", "webServer", "attachments"];
 
 /** 设置页 / 路由统一前缀。Client 半硬编码同一字符串。 */
-const BASE = "/plugins/dsh-doubao-image";
+const BASE = "/plugins/dsh-doubao-image-free";
 
 const ROUTE_STATUS = `${BASE}/api/status`;
 const ROUTE_DOUBAO_DEVICE = `${BASE}/api/doubao/device`;
@@ -194,7 +194,7 @@ const DEFAULT_DOUBAO_MODEL = DOUBAO_IMAGE_MODELS[0];
  * 混进同一个目录后，用户既分不清哪张图是哪个通道出的，想单独清理其中一个
  * 插件的产物也无从下手。这里用本插件自己的名字，边界清楚。
  */
-const DEFAULT_WORKSPACE_FOLDER = "dsh-doubao-image";
+const DEFAULT_WORKSPACE_FOLDER = "dsh-doubao-image-free";
 
 /**
  * 拼给模型看的「图在哪」提示。
@@ -1915,7 +1915,7 @@ export function apply(ctx, config) {
 
       if (mode === "video") {
         if (!cfg().video.enabled) {
-          throw new Error("视频功能已在设置页关闭：请在 dsh-doubao-image 设置里打开「视频生成」后重试");
+          throw new Error("视频功能已在设置页关闭：请在 dsh-doubao-image-free 设置里打开「视频生成」后重试");
         }
         if (referenceImages.length > 0) throw new Error("视频生成不支持参考图（mode=video 与 reference_images 互斥）");
         const { pool: videoPool, fallbackCookie: videoFallbackCookie } = await resolveDoubaoPool();

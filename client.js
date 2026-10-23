@@ -13,7 +13,7 @@
  * 免构建约束：不用 JSX，不 import 任何第三方包，只用 require("react")。
  */
 window.__ModuleLoader__.load({
-  id: "dsh-doubao-image",
+  id: "dsh-doubao-image-free",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
@@ -53,7 +53,7 @@ window.__ModuleLoader__.load({
      * 启动端口可能不同，换一次端口就是一个全新的空库 —— 工作区没变、图也
      * 没删，画廊却空了。所以权威副本放服务端，本地 IndexedDB 降级成缓存。
      */
-    var GALLERY_ROUTE = "/plugins/dsh-doubao-image/api/gallery";
+    var GALLERY_ROUTE = "/plugins/dsh-doubao-image-free/api/gallery";
 
     var dbPromise = null;
 
@@ -879,7 +879,7 @@ window.__ModuleLoader__.load({
 
 
     // ── Host 路由（与 index.js 的 BASE/ROUTE_ 常量逐字对齐） ──────────────
-    var BASE = "/plugins/dsh-doubao-image";
+    var BASE = "/plugins/dsh-doubao-image-free";
     var ROUTE_STATUS = BASE + "/api/status";
     var ROUTE_DOUBAO_SESSION = BASE + "/api/doubao/session";
     var ROUTE_DOUBAO_COOKIE = BASE + "/api/doubao/cookie";
@@ -3308,7 +3308,7 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("plugins.bundle.config", function () {
         return ctx.slots.register({
           name: "plugins.bundle.config",
-          key: "dsh-doubao-image",
+          key: "dsh-doubao-image-free",
           locale: NS,
         }, function (props) {
           return h(DoubaoImageSection, Object.assign({}, props, { scope: scope, t: t, locale: ctx.locale }));

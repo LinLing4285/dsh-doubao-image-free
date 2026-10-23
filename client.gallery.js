@@ -12,7 +12,7 @@
  * 对外只有 `exports.Mount` 一个键。
  */
 window.__ModuleLoader__.load({
-  id: "dsh-doubao-image",
+  id: "dsh-doubao-image-free",
   chunk: "client.gallery.js",
   factory: (require) => {
     var module = { exports: {} };
@@ -36,7 +36,7 @@ window.__ModuleLoader__.load({
     }
 
     var NS = shared.NS;
-    var BASE = typeof shared.BASE === "string" ? shared.BASE : "/plugins/dsh-doubao-image";
+    var BASE = typeof shared.BASE === "string" ? shared.BASE : "/plugins/dsh-doubao-image-free";
     /**
      * 工作区归属字段的推导。
      *

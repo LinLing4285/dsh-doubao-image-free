@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: "dsh-doubao-image",
+  id: "dsh-doubao-image-free",
   chunk: "client.tldraw.js",
   factory: (require) => {
     var module = { exports: {} };
