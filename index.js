@@ -23,12 +23,14 @@ import { fileURLToPath } from "node:url";
 import {
   generateImage as doubaoGenerateImage, editImage as doubaoEditImage,
   deleteConversation as doubaoDeleteConversation,
-  generateVideo as doubaoGenerateVideo, fetchConversationDiagnosis,
+  generateVideo as doubaoGenerateVideo, fetchConversationDiagnosis, describeVideoWatermark,
+  uploadToDoubao as doubaoUploadToDoubao,
   DOUBAO_IMAGE_MODELS, DOUBAO_IMAGE_MODELS_SUBSCRIBED,
+  DOUBAO_VIDEO_MODELS, DOUBAO_VIDEO_MODEL_LABELS,
 } from "./lib/doubao.mjs";
 import { readDeviceIdentityFromBrowser } from "./lib/doubao-device.mjs";
 import { normalizeDevice } from "./lib/doubao-identity.mjs";
-import { generateImage as gptGenerateImage } from "./lib/gpt-free.mjs";
+import { generateImage as gptGenerateImage, deleteConversation as gptDeleteConversation } from "./lib/gpt-free.mjs";
 import { cdpTargets, cdpVersion, fetchChatGptSession, getCookies, CdpConnection, waitForCdp } from "./lib/cdp.mjs";
 import { createSessionStore } from "./lib/sessions.mjs";
 import { BrowserLoginSession, DOUBAO_DEBUG_PORT, DOUBAO_PROFILE_DIR, resetProfile } from "./lib/browser-login.mjs";
@@ -588,6 +590,7 @@ const CONFIG_DEFAULTS = {
     enabled: false,
     model: "seedance_v2.0_mini",
     defaultDurationSec: 5,
+    removeWatermark: true,
   },
   image: {
     timeoutMs: 300_000,
@@ -626,8 +629,30 @@ export const Config = z
     }).default(CONFIG_DEFAULTS.gpt),
     video: z.object({
       enabled: z.boolean().default(false).description("是否允许调用豆包生视频"),
-      model: z.string().default("seedance_v2.0_mini").description("视频模型"),
+      /*
+       * 用 `z.string()` 而不是 `z.enum(...)`：旧配置里可能存着任意字符串，
+       * enum 会让整段配置校验失败（用户会看到「配置损坏」而不是「模型名不认识」）。
+       * 真正的收紧在 `normalizeVideoModel`（lib/doubao-core.mjs）——不在清单里
+       * 就吸附到默认档，且工作台每次生成都能覆盖这个值。
+       */
+      model: z.string().default(DOUBAO_VIDEO_MODELS[0])
+        .description(`默认视频模型，可选：${DOUBAO_VIDEO_MODELS.join(" / ")}`),
       defaultDurationSec: z.number().default(5).description("视频默认时长（秒）"),
+      /*
+       * 水印开关。
+       *
+       * 豆包生成视频时同时产出两条流：带水印的 `download_url`（lr=video_gen_watermark_dyn）
+       * 与无水印的 `get_without_watermark` 流（lr=unwatermarked）。两条流是不同
+       * 的 TOS 对象，字节不同，不是靠 URL 参数现渲染的。
+       *
+       * 默认开 = 取无水印那条。用户反馈「不知道怎么去水印」就是这个开关存在
+       * 的意义：不必知道接口细节，这里关掉就拿到带水印文件（例如要投稿到
+       * 需要标注 AI 生成来源的平台）。
+       *
+       * 关掉时**不会**去调 get_without_watermark，直接下 download_url —— 少一次
+       * 请求，也避免有人以为「关了开关还在偷偷去水印」。
+       */
+      removeWatermark: z.boolean().default(true).description("去掉视频水印（关闭则保留豆包烧录的水印）"),
     }).default(CONFIG_DEFAULTS.video),
     image: z.object({
       timeoutMs: z.number().default(300_000).description("生图的整体超时（毫秒）"),
@@ -1270,6 +1295,31 @@ export function apply(ctx, config) {
     return current;
   };
 
+  /**
+   * 出图后把 ChatGPT 侧的对话隐藏掉（用户 2026-10-25 要求「gpt 生完图要自动删除会话」）。
+   *
+   * 抽成一个函数是因为它有**两条**调用路径（工具 `gpt_image` 与 `/api/regenerate`），
+   * 而清理语义必须一致：删不掉不回滚出图，只把失败原因带回去。
+   *
+   * @returns {Promise<null | {conversationId: string, ok: false, reason: string}>}
+   *   `null` 表示无需清理或清理成功——只有**失败**才值得进返回值。
+   */
+  const cleanupGptConversation = async ({ credential, conversationId }) => {
+    const id = typeof conversationId === "string" ? conversationId.trim() : "";
+    if (id === "") return null;
+    const deleted = await gptDeleteConversation({
+      accessToken: credential.accessToken,
+      cookieHeader: credential.cookieHeader,
+      oaiDeviceId: credential.oaiDeviceId,
+      proxyUrl: credential.proxyUrl,
+      timeoutMs: 30_000,
+      conversationId: id,
+    });
+    if (deleted.ok) return null;
+    console.info(`GPT 会话清理未成功（不影响出图）：${deleted.reason}`);
+    return { conversationId: id, ok: false, reason: deleted.reason };
+  };
+
   /* ------------------------------------------------------------ 图片落盘 */
 
   /**
@@ -1554,6 +1604,18 @@ export function apply(ctx, config) {
       });
       const raw = result.raw ?? {};
       /**
+       * 生完就删会话（用户 2026-10-25 要求）。
+       *
+       * GPT 免费通道每生一张图都会在账号里新建一个对话，不清理会一直堆。
+       * `deleteConversation` 发的是 `PATCH {is_visible:false}`（上游同款），
+       * **失败不抛**：图已经出了，删除只是清理动作，不能因此把整次生图判失败。
+       * 失败原因回传给上层，让用户知道要去网页手动删哪一个。
+       */
+      const cleanup = await cleanupGptConversation({
+        credential,
+        conversationId: raw.conversationId,
+      });
+      /**
        * GPT 免费通道**实测一次只能出一张**（用户确认），所以这里不循环、
        * 也不吐 `extraAttachments` —— 无中生有多图会让上层以为还有第 2 张。
        */
@@ -1570,6 +1632,7 @@ export function apply(ctx, config) {
         provider: "gpt",
         ...(paths[0] === undefined ? {} : { savedTo: paths[0] }),
         ...(saveError === undefined ? {} : { saveError }),
+        ...(cleanup === null ? {} : { conversationCleanup: cleanup }),
         summary: [
           `ChatGPT 免费账户出图完成（model=${raw.model ?? "?"}${raw.revisedPrompt ? `，改写后的提示词：${raw.revisedPrompt}` : ""}）。`,
           imagePathHint(paths[0], saveError),
@@ -1698,11 +1761,108 @@ export function apply(ctx, config) {
 
   /* ---------------------------------------------------------- 工具：豆包 */
 
+  /**
+   * 生成一条视频（文生 / 图生）—— 工具与 `/api/regenerate` 共用。
+   *
+   * 抽出来的理由与 `runGeneration` 相同：`doubao_image` 工具与工作台
+   * 「图生视频」入口要的是**同一件事**（上传参考图 → 跑视频通道 → 落盘 →
+   * 组返回体）。抄一份到路由里，两边的会话清理与无水印判定迟早漂移。
+   *
+   * @param {object} opts
+   * @param {string} opts.prompt
+   * @param {string} [opts.ratio] 请求画幅；有参考图时服务端会忽略它
+   * @param {number} [opts.duration] 秒；缺省取设置里的 video.defaultDurationSec
+   * @param {Array<{data: Buffer, mediaType: string, ext: string}>} [opts.references]
+   *   参考图原始字节。**必须在函数内上传**（而不是让调用方先传好），
+   *   因为上传与生成必须用同一个账号的 cookie —— 多号池换号时分成两步
+   *   就会出现「A 号上传的图，B 号拿着 uri 去生成」，服务端认不出这张图。
+   * @param {object} [opts.exec]
+   * @returns {Promise<object>}
+   */
+  const runVideoGeneration = async ({ prompt, ratio, duration, model, references = [], exec }) => {
+    const { pool, fallbackCookie } = await resolveDoubaoPool();
+    exec?.signal?.throwIfAborted?.();
+    const callVideo = async (cookieHeader, identity = {}) => {
+      const uploaded = [];
+      for (const ref of references) {
+        uploaded.push(await doubaoUploadToDoubao(cookieHeader, ref.data, ref.ext, identity));
+      }
+      return doubaoGenerateVideo({
+        cookieHeader,
+        ...identity,
+        prompt: `${prompt}。${VIDEO_PROMPT_SUFFIX}`,
+        ratio: ratio ?? "auto",
+        duration: duration ?? cfg().video.defaultDurationSec,
+        model: model ?? cfg().video.model,
+        references: uploaded,
+        removeWatermark: cfg().video.removeWatermark !== false,
+        timeoutMs: cfg().image.timeoutMs,
+        signal: exec?.signal,
+      });
+    };
+    const outcome = pool
+      ? await withDoubaoAccount(pool, (a) => callVideo(a.cookieHeader, doubaoIdentityOf(a)))
+      : { result: await callVideo(fallbackCookie), account: null, attempts: [] };
+    const result = outcome.result;
+    const attachment = await attachFile(result.data, "doubao-video.mp4");
+    /**
+     * 视频的会话清理：与生图同一条规则。
+     *
+     * **为什么视频必须删**：视频生成同样会新建一个豆包会话，而它的
+     * 提示词被拼上了 `VIDEO_PROMPT_SUFFIX`，留在账号里比图片会话更难看。
+     * 视频分支**不复用会话**（`doubaoIdentityOf` 没传 `reuseConversation`，
+     * 视频也不需要多轮上下文），所以每生成一次就多一个，不删会无限堆积。
+     *
+     * 删除失败不影响出片：视频已经落盘了，这是清理动作。失败原因
+     * 放进返回值，用户才知道要去豆包手动删哪一个。
+     */
+    let cleanup = null;
+    if (typeof result?.conversationId === "string" && result.conversationId !== "") {
+      const deleted = await doubaoDeleteConversation(
+        outcome.account?.cookieHeader ?? fallbackCookie,
+        result.conversationId,
+        { device: outcome.account?.device, timeoutMs: cfg().image.timeoutMs },
+      );
+      if (!deleted.ok) cleanup = { conversationId: result.conversationId, ...deleted };
+    }
+    /**
+     * `fileHostPath` 给出落盘文件的绝对路径。视频没有图片那样的对话内
+     * 渲染块，用户只能自己去打开文件，所以必须把这个路径回传。
+     * 它是同步方法；宿主 attachment 后端不支持文件存储时返回 undefined。
+     */
+    const hostPath = ctx.attachments.fileHostPath?.(attachment) ?? "";
+    /**
+     * 图生视频时 `ratio` 是**请求值**，服务端会忽略它、按参考图取景
+     * （实测：请求 16:9 + 512x512 参考图 → 实际 720x720）。所以有参考图
+     * 时 summary 报的是实测像素，不是 `result.ratio`。
+     */
+    const isFromImage = result.fromImage === true;
+    const sizeNote = isFromImage
+      ? `${result.width ?? "?"}x${result.height ?? "?"}（跟随参考图，请求的画幅 ${result.ratio} 被忽略）`
+      : result.ratio;
+    return {
+      attachment,
+      mediaType: result.mediaType,
+      ratio: result.ratio,
+      width: result.width,
+      height: result.height,
+      watermarkFree: result.watermarkFree === true,
+      duration: result.duration,
+      model: result.model,
+      path: hostPath,
+      fromImage: isFromImage,
+      summary: `豆包已生成${isFromImage ? "图生" : ""}视频（${sizeNote}，${result.duration}s，model=${result.model}${accountNote(outcome.account, pool, outcome.attempts)}）。${describeVideoWatermark(result, cfg().video.removeWatermark !== false)}`,
+      ...(cleanup === null ? {} : { conversationCleanup: cleanup }),
+    };
+  };
+
   ctx.tools.register({
     name: "doubao_image",
     description:
       "用网页版豆包（豆包 App 的网页端）生成、编辑图片或生成视频。默认文生图；给出 reference_images（本地图片路径）时按图生图处理。"
       + "注意：豆包的图生图会重绘整张画面（背景与视角可能改变），不要向用户承诺「保留原图」。"
+      + "mode=video 时若同时给出 reference_images，则走图生视频（以参考图为第一帧的构图来源）；"
+      + "图生视频的画幅跟随参考图，此时 ratio 会被服务端忽略。"
       + "视频生成需要先在插件设置页打开开关。",
     parameters: {
       type: "object",
@@ -1711,8 +1871,8 @@ export function apply(ctx, config) {
       properties: {
         prompt: { type: "string", description: "画面描述，中文效果最好" },
         size: { type: "string", description: "文生图目标尺寸，如 1024x1024 / 1280x720；图生图固定请求 auto，实际比例以服务端回显为准" },
-        reference_images: { type: "array", items: { type: "string" }, description: "本地参考图路径（图生图）；给出后自动走编辑模式" },
-        mode: { type: "string", enum: ["auto", "generate", "edit", "video"], description: "缺省 auto：有参考图则编辑，否则生成。video 生成短视频" },
+        reference_images: { type: "array", items: { type: "string" }, description: "本地参考图路径（图生图 / 图生视频）；给出后自动走编辑模式，mode=video 时走图生视频" },
+        mode: { type: "string", enum: ["auto", "generate", "edit", "video"], description: "缺省 auto：有参考图则编辑，否则生成。video 生成短视频（带 reference_images 即图生视频）" },
         model: {
           type: "string",
           enum: [...DOUBAO_IMAGE_MODELS, ...DOUBAO_IMAGE_MODELS_SUBSCRIBED],
@@ -1721,7 +1881,7 @@ export function apply(ctx, config) {
             + `${DOUBAO_IMAGE_MODELS_SUBSCRIBED.join(" / ")} 需要豆包订阅套餐，免费账号会收到订阅提示。`
             + "不同模型出图风格差异明显，同一提示词可换模型重试。",
         },
-        ratio: { type: "string", description: "视频比例：auto / 1:1 / 4:3 / 16:9 / 9:16 / 21:9" },
+        ratio: { type: "string", description: "视频比例：auto / 1:1 / 4:3 / 16:9 / 9:16 / 21:9。图生视频时该参数被服务端忽略（画幅跟随参考图）" },
         edit_ratio: { type: "string", description: "仅图生图：画幅请求值，缺省 auto；可选 auto / 1:1 / 4:3 / 16:9 / 9:16 / 2:3 / 3:4 / 3:2。`ratio` 已被视频占用，图生图用本参数" },
         duration: { type: "integer", description: "视频时长（秒），1-10，默认取设置值" },
       },
@@ -1896,6 +2056,20 @@ export function apply(ctx, config) {
           path: typeof value?.path === "string" ? value.path : "",
           // 视频时长（秒）：画廊视频卡上要显示，生图没有这个字段。
           ...(typeof value?.duration === "number" && isFinite(value.duration) ? { duration: value.duration } : {}),
+          /*
+           * 视频的宽高与免水印标记。
+           *
+           * 视频的 `attachment` 只有 attachmentId/name/kind/bytes，没有
+           * mediaType 也没有宽高，所以卡片上那个「720x720」「无水印」只能靠
+           * 记录级字段。这条路径是**会话历史回填**（重开旧会话时卡片自动
+           * 入库），漏了它就会出现「刚生成的有角标、重开会话后角标没了」。
+           *
+           * `watermarkFree` 按布尔类型透传：`false` 是「知道带水印」，缺失
+           * 是「不知道」，两者在 UI 上不同。
+           */
+          ...(typeof value?.width === "number" && isFinite(value.width) ? { width: value.width } : {}),
+          ...(typeof value?.height === "number" && isFinite(value.height) ? { height: value.height } : {}),
+          ...(typeof value?.watermarkFree === "boolean" ? { watermarkFree: value.watermarkFree } : {}),
           // 工作区落盘路径投影给客户端：卡片上要显示「这张图存在哪」。
           ...(typeof value?.savedTo === "string" && value.savedTo !== "" ? { savedTo: value.savedTo } : {}),
           ...(attachment === undefined ? {} : { attachment }),
@@ -1917,63 +2091,34 @@ export function apply(ctx, config) {
         if (!cfg().video.enabled) {
           throw new Error("视频功能已在设置页关闭：请在 dsh-doubao-image-free 设置里打开「视频生成」后重试");
         }
-        if (referenceImages.length > 0) throw new Error("视频生成不支持参考图（mode=video 与 reference_images 互斥）");
-        const { pool: videoPool, fallbackCookie: videoFallbackCookie } = await resolveDoubaoPool();
-        exec.signal?.throwIfAborted?.();
-        const callVideo = (cookieHeader, identity = {}) => doubaoGenerateVideo({
-          cookieHeader,
-          ...identity,
-          prompt: `${prompt}。${VIDEO_PROMPT_SUFFIX}`,
-          ratio: args.ratio ?? "auto",
-          duration: args.duration ?? cfg().video.defaultDurationSec,
-          model: cfg().video.model,
-          timeoutMs: cfg().image.timeoutMs,
-          signal: exec.signal,
-        });
-        const videoOutcome = videoPool
-          ? await withDoubaoAccount(videoPool, (a) => callVideo(a.cookieHeader, doubaoIdentityOf(a)))
-          : { result: await callVideo(videoFallbackCookie), account: null, attempts: [] };
-        const result = videoOutcome.result;
-        const attachment = await attachFile(result.data, "doubao-video.mp4");
         /**
-         * 视频的会话清理：与生图同一条规则。
+         * 参考图 → 图生视频。
          *
-         * **为什么视频必须删**：视频生成同样会新建一个豆包会话，而它的
-         * 提示词被拼上了 `VIDEO_PROMPT_SUFFIX`（一长串画质/镜头描述），
-         * 留在账号里比图片会话更难看。视频分支**不复用会话**
-         * （`doubaoIdentityOf` 没传 `reuseConversation`，视频也不需要
-         * 多轮上下文），所以每生成一次就多一个，不删会无限堆积。
-         *
-         * 删除失败不影响出片：视频已经落盘了，这是清理动作。失败原因
-         * 放进返回值，用户才知道要去豆包手动删哪一个。
+         * 2026-10-23 实测：这个端点**接受**参考图，但请求体里参考图必须
+         * 单独占一条 message（`videoRequestBody` 里已处理）。有参考图时
+         * 服务端忽略 `ratio`，画幅跟随参考图 —— 所以下面 summary 用的是
+         * `result.width x result.height`，不是 `result.ratio`。
          */
-        let videoCleanup = null;
-        if (typeof result?.conversationId === "string" && result.conversationId !== "") {
-          const deleted = await doubaoDeleteConversation(
-            videoOutcome.account?.cookieHeader ?? videoFallbackCookie,
-            result.conversationId,
-            { device: videoOutcome.account?.device, timeoutMs: cfg().image.timeoutMs },
-          );
-          if (!deleted.ok) videoCleanup = { conversationId: result.conversationId, ...deleted };
+        const videoRefs = [];
+        for (const file of referenceImages) {
+          const absolute = isAbsolute(file) ? file : join(process.cwd(), file);
+          let data;
+          try {
+            data = await readFile(absolute);
+          } catch (error) {
+            throw new Error(`读取参考图失败 ${absolute}：${errText(error)}`);
+          }
+          videoRefs.push({ data, mediaType: mediaTypeOfFile(absolute), ext: extname(absolute).toLowerCase() || ".png" });
         }
-        /**
-         * `fileHostPath` 给出落盘文件的绝对路径。视频没有图片那样的对话内
-         * 渲染块，用户只能自己去打开文件，所以必须把这个路径回传。
-         * 它是同步方法；宿主 attachment 后端不支持文件存储时返回 undefined。
-         */
-        const hostPath = ctx.attachments.fileHostPath?.(attachment) ?? "";
-        return {
-          kind: "video",
-          mediaType: result.mediaType,
-          ratio: result.ratio,
-          watermarkFree: false,
-          duration: result.duration,
-          model: result.model,
-          path: hostPath,
-          summary: `豆包已生成视频（${result.ratio}，${result.duration}s，model=${result.model}${accountNote(videoOutcome.account, videoPool, videoOutcome.attempts)}）。视频带豆包水印。`,
-          attachment,
-          ...(videoCleanup === null ? {} : { conversationCleanup: videoCleanup }),
-        };
+        const generated = await runVideoGeneration({
+          prompt,
+          ratio: args.ratio ?? "auto",
+          duration: args.duration,
+          model: cfg().video.model,
+          references: videoRefs,
+          exec,
+        });
+        return { kind: "video", ...generated };
       }
 
       const { pool: toolPool, fallbackCookie: toolFallbackCookie } = await resolveDoubaoPool();
@@ -2102,6 +2247,24 @@ export function apply(ctx, config) {
           savedTo: { type: "string" },
           /** 另存到工作区失败时的原因；失败不影响出图。 */
           saveError: { type: "string" },
+          /**
+           * 会话清理失败时才出现。
+           *
+           * 2026-10-25 起 GPT 免费通道也「生完就删会话」（用户要求）。
+           * 删不掉不影响出图，但必须让用户知道——否则他以为没留痕。
+           * `additionalProperties: false` 下未声明的字段会让整次调用失败，
+           * 所以必须在这里声明（同豆包工具的同一处雷）。
+           */
+          conversationCleanup: {
+            type: "object",
+            additionalProperties: false,
+            required: ["conversationId", "ok", "reason"],
+            properties: {
+              conversationId: { type: "string" },
+              ok: { type: "boolean" },
+              reason: { type: "string" },
+            },
+          },
           attachment: IMAGE_REF_SCHEMA,
         },
       },
@@ -2146,6 +2309,14 @@ export function apply(ctx, config) {
 
       const attachment = await attachImage(result.data, result.mediaType, "gpt-image");
       const raw = result.raw ?? {};
+      /**
+       * 生完就删会话（用户 2026-10-25 要求）。删除失败不抛、不回滚出图，
+       * 只把原因带回返回值；`cleanupGptConversation` 的注释写了为什么。
+       */
+      const cleanup = await cleanupGptConversation({
+        credential,
+        conversationId: raw.conversationId,
+      });
       const { paths, saveError } = await saveAllToWorkspace(
         [{ attachment, mediaType: result.mediaType, watermarkFree: false, data: result.data }],
         exec,
@@ -2159,6 +2330,7 @@ export function apply(ctx, config) {
         count: 1,
         ...(paths[0] === undefined ? {} : { savedTo: paths[0] }),
         ...(saveError === undefined ? {} : { saveError }),
+        ...(cleanup === null ? {} : { conversationCleanup: cleanup }),
         summary: [
           `ChatGPT 免费账户出图完成（model=${raw.model ?? "?"}${raw.revisedPrompt ? `，改写后的提示词：${raw.revisedPrompt}` : ""}）。`,
           imagePathHint(paths[0], saveError),
@@ -2265,6 +2437,13 @@ export function apply(ctx, config) {
         timeoutMs: c.image.timeoutMs,
         proxyUrl: c.gpt.proxyUrl,
         videoModel: c.video.model,
+        /*
+         * 视频模型清单与标签也一起送出去：工作台的下拉要显示「Seedance 2.0」
+         * 这种网页端叫法，而客户端 bundle 拿不到 Host 的常量。放在 status 里
+         * 是唯一不重复维护两份清单的做法。
+         */
+        videoModels: DOUBAO_VIDEO_MODELS.map((key) => ({ key, label: DOUBAO_VIDEO_MODEL_LABELS[key] ?? key })),
+        videoRemoveWatermark: c.video.removeWatermark !== false,
       },
     });
   }, "status route");
@@ -2824,19 +3003,41 @@ export function apply(ctx, config) {
     const size = isRecord(body) && typeof body.ratio === "string" ? ratioToSize(body.ratio) : undefined;
 
     const mode = body.mode === undefined ? "generate" : body.mode;
-    if (mode !== "generate" && mode !== "edit") return sendJson(res, 400, { ok: false, reason: "invalid-mode" });
+    if (mode !== "generate" && mode !== "edit" && mode !== "i2v" && mode !== "video") return sendJson(res, 400, { ok: false, reason: "invalid-mode" });
+    /*
+     * 视频有两条进来的路，语义上都是「跑视频通道」：
+     *   - `video`：工作台「生视频」按钮用的**统一入口**，带不带参考图都走它
+     *     （有参考图 → 图生视频；没有 → 文生视频）。2026-10-25 起客户端只用这个。
+     *   - `i2v`：**必须有参考图**的旧别名，保留给已有调用与测试，
+     *     行为与 `video` + 参考图完全一致。
+     * 之所以不把 `video` 做成「i2v 的子集」再让客户端自己判断：模式判断散在两端
+     * 迟早在「有图却没走图生视频」上出分歧，入口就一个才不会有二义。
+     */
+    const isVideoMode = mode === "video" || mode === "i2v";
     /*
      * GPT 图生图已支持（2026-10-22）：参考图上传到 `/backend-api/files` 拿
      * fileId，对话 body 用 `multimodal_text` + `image_asset_pointer` 引用。
      * 这里原先有一条 `gpt-edit-unsupported` 的硬拒——那是实现缺失时的占位，
      * 不是 GPT 的能力边界，已移除。
      */
+    /*
+     * 视频只有豆包这一条通道（GPT 免费账户不出视频）。在这里就拒掉，
+     * 而不是等 `runVideoGeneration` 里跑一遍豆包才失败 —— 前者一秒出结果，
+     * 后者要等十几秒才告诉用户「选错通道了」。
+     */
+    if (isVideoMode && provider !== "doubao") return sendJson(res, 400, { ok: false, reason: "provider-does-not-support-image-to-video" });
+    if (isVideoMode && !cfg().video.enabled) return sendJson(res, 400, { ok: false, reason: "video-disabled" });
     const refs = body.references;
-    if (mode === "edit" && (!Array.isArray(refs) || refs.length === 0)) return sendJson(res, 400, { ok: false, reason: "reference-required" });
+    /*
+     * `i2v` 的历史契约是「必须有参考图」，保持不变；`video` 两可，
+     * 参考图只是可选的构图输入。`edit` 仍然必须给图（没有图就不是编辑）。
+     */
+    if ((mode === "edit" || mode === "i2v") && (!Array.isArray(refs) || refs.length === 0)) return sendJson(res, 400, { ok: false, reason: "reference-required" });
+    if (mode === "video" && refs !== undefined && !Array.isArray(refs)) return sendJson(res, 400, { ok: false, reason: "invalid-references" });
     if (mode === "generate" && refs !== undefined && (!Array.isArray(refs) || refs.length > 0)) return sendJson(res, 400, { ok: false, reason: "references-require-edit" });
     // 编辑模式：`ratio` 作为画幅请求值**原值透传**给 lib（lib 自行吸附合法值，
     // 缺省 auto），不再折算成 size；generate 模式维持 ratioToSize 链路不变。
-    const editRatio = mode === "edit" && isRecord(body) && typeof body.ratio === "string" ? body.ratio : undefined;
+    const editRatio = (mode === "edit" || isVideoMode) && isRecord(body) && typeof body.ratio === "string" ? body.ratio : undefined;
     /*
      * 模型只在豆包通道有效；非法值不在这里拦，交给 lib 吸附默认
      * （路由层重复维护一份白名单迟早与 lib 漂移）。
@@ -2863,6 +3064,70 @@ export function apply(ctx, config) {
           if (total > limits.maxMessageImageBytes) throw new Error("参考图总大小超过附件限制");
           images.push(image);
         }
+      }
+      /*
+       * 视频（文生 + 图生共用一条通道）：与「图生图」共用同一条附件读取链路
+       * （客户端先把字节经 `/api/import` 存成本地 attachment），区别只在
+       * 拿字节去跑视频通道。参考图数量上限同样复用附件限制，不另立一套数字。
+       *
+       * 参考图**可以为空**——那就是文生视频。空数组与 undefined 等价，
+       * `runVideoGeneration` 只管上传非空的那些。
+       */
+      if (isVideoMode) {
+        const limits = ctx.attachments.imageLimits;
+        const rawRefs = Array.isArray(refs) ? refs : [];
+        if (rawRefs.length > limits.maxImagesPerMessage) throw new Error("参考图数量超过附件限制");
+        images = [];
+        let total = 0;
+        for (const raw of rawRefs) {
+          const ref = parseImageAttachmentRef(raw);
+          if (!ref) throw new Error("无效的参考图附件");
+          const stored = await ctx.attachments.readImage(ref);
+          const image = {
+            data: stored.data,
+            mediaType: stored.ref.mediaType,
+            ext: extOfMime(stored.ref.mediaType),
+          };
+          await ctx.attachments.validateImage(image);
+          total += image.data.length;
+          if (total > limits.maxMessageImageBytes) throw new Error("参考图总大小超过附件限制");
+          images.push(image);
+        }
+        /*
+         * `duration` 只在这里读一次：缺省交给 `runVideoGeneration` 取设置值，
+         * 非法值（负数 / NaN / 超范围）一律当没给——让服务端用默认时长，
+         * 比传一个 0 秒或 999 秒的请求体更可预期。
+         */
+        const rawDuration = isRecord(body) && typeof body.duration === "number" ? body.duration : undefined;
+        const duration = typeof rawDuration === "number" && isFinite(rawDuration) && rawDuration >= 1 && rawDuration <= 10
+          ? Math.round(rawDuration)
+          : undefined;
+        const video = await runVideoGeneration({
+          prompt,
+          ratio: editRatio,
+          duration,
+          model: requestedModel,
+          references: images,
+          exec: undefined,
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          attachment: video.attachment,
+          prompt,
+          provider: "doubao",
+          kind: "video",
+          model: video.model,
+          ratio: video.ratio,
+          duration: video.duration,
+          width: video.width,
+          height: video.height,
+          fromImage: video.fromImage,
+          path: video.path,
+          watermarkFree: video.watermarkFree,
+          summary: video.summary,
+          ...(video.conversationCleanup ? { conversationCleanup: video.conversationCleanup } : {}),
+          createdAt: Date.now(),
+        });
       }
       const generated = await runGeneration({ provider, prompt, size, ratio: editRatio, model: requestedModel, images });
       if (mode === "edit" && [generated.attachment, ...(generated.extraAttachments || [])].some((image) => refs.some((ref) => ref.attachmentId === image.attachmentId))) {
@@ -3129,4 +3394,4 @@ export function apply(ctx, config) {
   }, "gallery route");
 }
 
-export const __internals = { BASE, sameOrigin, allowsStateChange, isLoopbackHost, originMatchesHost, sniffPngOrJpeg, mediaTypeOfFile, findEdgeExecutable, pluginDir: fileURLToPath(new URL(".", import.meta.url)) };
+export const __internals = { BASE, sameOrigin, allowsStateChange, isLoopbackHost, originMatchesHost, sniffPngOrJpeg, mediaTypeOfFile, findEdgeExecutable, describeVideoWatermark, pluginDir: fileURLToPath(new URL(".", import.meta.url)) };

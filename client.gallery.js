@@ -288,6 +288,15 @@ window.__ModuleLoader__.load({
         daysAgo: "{count} 天前",
         lightboxPrev: "上一张",
         lightboxNext: "下一张",
+        /*
+         * 视频卡片的角标文案。
+         *
+         * `{n}` 是秒数（保存的是 5.057 这种小数，显示按一位小数）。水印
+         * 只挂「有水印」这一种角标：无水印是默认状态，再挂一个「无水印」
+         * 等于每条都挂，反而把真正需要注意的那条淹掉。
+         */
+        videoDurationBadge: "{n}s",
+        videoWatermarkBadge: "带水印",
         importFailed: "导入失败",
         importAdded: "已导入 {count} 张",
         /** B13：部分失败要如实报「导入 N 张，M 张失败」，官方同款文案。 */
@@ -379,6 +388,8 @@ window.__ModuleLoader__.load({
         daysAgo: "{count}d ago",
         lightboxPrev: "Previous",
         lightboxNext: "Next",
+        videoDurationBadge: "{n}s",
+        videoWatermarkBadge: "Watermarked",
         importFailed: "Import failed",
         importAdded: "Imported {count}",
         importPartial: "Imported {count}, {fail} failed",
@@ -804,6 +815,10 @@ window.__ModuleLoader__.load({
         if (typeof options.model === "string" && options.model !== "" && body.provider === "doubao") {
           body.model = options.model;
         }
+        // 时长同理：只有生视频用得上，别的模式不带。
+        if (options.mode === "video" && typeof options.duration === "number" && isFinite(options.duration)) {
+          body.duration = options.duration;
+        }
       }
       return body;
     }
@@ -849,11 +864,29 @@ window.__ModuleLoader__.load({
       return Promise.resolve()
         .then(function () {
           if (!options) return;
-          if (options.mode !== "edit" && options.mode !== "generate") throw new Error("invalid-mode");
+          /*
+           * 三种模式：`generate` 文生图 / `edit` 图生图 / `video` 生视频。
+           *
+           * `video` 与 `edit` 共用「参考图先经 /api/import 落成本地 attachment
+           * 再随 references 发给 Host」这条链路，区别只在 Host 那边按
+           * `mode` 分流到视频接口 —— 客户端不需要知道视频协议细节。
+           *
+           * `video` 的参考图是**可选**的：没有图就是文生视频，不会先抛
+           * `reference-required`（那是 `edit` 的契约，视频两可）。
+           */
+          if (options.mode !== "edit" && options.mode !== "generate" && options.mode !== "video") throw new Error("invalid-mode");
           requestOptions = { mode: options.mode, references: [] };
-          // 模型是面板选定的通道参数，和 mode 同级透传；缺省不写，交给 Host 用设置值。
+          /*
+           * 模型是面板选定的通道参数，和 mode 同级透传；缺省不写，交给 Host
+           * 用设置值。注意视频与图片的 model 是**两套标识**，面板已按模式
+           * 分开传（视频传 `seedance_*`，图片传 `Seedream ...`）。
+           */
           if (typeof options.model === "string" && options.model !== "") requestOptions.model = options.model;
-          if (options.mode !== "edit") return;
+          // 视频时长只对 video 有意义；文生图/图生图带了也会被 Host 忽略。
+          if (options.mode === "video" && typeof options.duration === "number" && isFinite(options.duration)) {
+            requestOptions.duration = options.duration;
+          }
+          if (options.mode === "generate") return;
           /*
            * GPT 图生图已支持（2026-10-22）：参考图先经 `/api/import` 落成本地
            * attachment，再随 `references` 发给 Host，由 Host 上传到 ChatGPT 文件
@@ -861,7 +894,15 @@ window.__ModuleLoader__.load({
            * 那是实现缺失时的占位，已移除。
            */
           var files = options.references;
-          if (!Array.isArray(files) || files.length === 0) throw new Error("reference-required");
+          /*
+           * 视频允许零参考图（＝文生视频），所以只有 edit 在这里硬拒。
+           * 早先写成「三种模式都要求有图」，结果是「想文生视频必须传图」。
+           */
+          if (options.mode === "video") {
+            if (!Array.isArray(files) || files.length === 0) return;
+          } else if (!Array.isArray(files) || files.length === 0) {
+            throw new Error("reference-required");
+          }
           return files.reduce(function (chain, file) {
             return chain.then(function () {
               return (ctx.readFile || readFileAsDataUrl)(file);
@@ -963,6 +1004,32 @@ window.__ModuleLoader__.load({
             createdAt: typeof payload.createdAt === "number" ? payload.createdAt : ctx.now(),
             isFavorite: false,
           }, wsFields);
+          /*
+           * 视频走单独的分支：`kind` 必须写成 "video"，画廊要靠它区分
+           * 视频卡与图片卡（`isVideoItem` 读的就是这个字段）。漏掉会让
+           * 生成的视频混进图库列表、点开是坏图。
+           *
+           * 视频没有 `aspectRatio` 的语义（画幅由服务端定，且图生视频
+           * 跟随参考图），所以只记 Host 回传的 `ratio` 原值。
+           */
+          if (requestOptions && requestOptions.mode === "video") {
+            next.kind = "video";
+            if (typeof payload.duration === "number" && isFinite(payload.duration)) next.duration = payload.duration;
+            /*
+             * 宽高不是「附件属性」而是「这条记录的角标数据」：视频的
+             * `attachment` 只有 attachmentId/name/kind/bytes，没有 mediaType
+             * 也没有宽高，卡片上那个「720x720」只能从记录级字段读。
+             */
+            if (typeof payload.width === "number" && isFinite(payload.width)) next.width = payload.width;
+            if (typeof payload.height === "number" && isFinite(payload.height)) next.height = payload.height;
+            // `false`（明确带水印）与「没这个字段」（不知道）是两种状态，
+            // 所以按类型透传而不是只在 true 时写。
+            if (typeof payload.watermarkFree === "boolean") next.watermarkFree = payload.watermarkFree;
+            if (typeof payload.ratio === "string" && payload.ratio !== "") next.aspectRatio = payload.ratio;
+            return Promise.resolve(ctx.saveItem(next)).then(function (saved) {
+              return { ok: true, item: next, saved: saved !== false };
+            });
+          }
           // 画幅优先信 Host 回给的那一个：Host 会把豆包吸附成最终比例，
           // 写面板原始值会让画廊比例筛选和实际图片对不上。
           var finalRatio = typeof payload.ratio === "string" && payload.ratio !== ""
@@ -1004,6 +1071,27 @@ window.__ModuleLoader__.load({
     function itemRatio(item) {
       if (!item || typeof item !== "object") return "";
       return typeof item.aspectRatio === "string" ? item.aspectRatio.trim() : "";
+    }
+
+    /**
+     * 视频卡脚注：`时长 · 宽x高`，缺什么就省什么。
+     *
+     * 视频记录**没有 `mediaType`**，所以没法像图片那样从 attachment 推尺寸，
+     * 只能读记录级的 `duration` / `width` / `height`。三个都可能缺（老记录、
+     * 落盘被裁、接口没回显），所以逐项判断、全部缺失时返回空串——让调用方
+     * 决定要不要渲染这一行，而不是印一串「undefined x undefined」。
+     */
+    function videoFootText(item) {
+      if (!item || typeof item !== "object") return "";
+      var parts = [];
+      if (typeof item.duration === "number" && isFinite(item.duration) && item.duration > 0) {
+        parts.push(item.duration.toFixed(1) + "s");
+      }
+      if (typeof item.width === "number" && isFinite(item.width) && item.width > 0
+        && typeof item.height === "number" && isFinite(item.height) && item.height > 0) {
+        parts.push(item.width + "x" + item.height);
+      }
+      return parts.join("  ");
     }
 
     /**
@@ -1440,6 +1528,18 @@ window.__ModuleLoader__.load({
         },
           h("span", { className: "__dbi_g_lightboxPrompt" }, item.prompt || t("noPrompt")),
           h("span", { className: "__dbi_g_lightboxModel" }, item.model || item.provider || ""),
+          /*
+           * 灯箱里也补上视频的时长/尺寸与水印状态：卡片区只有 10px 小字，
+           * 全屏看的时候正是「这条到底多长、多清晰、有没有水印」最该确认的
+           * 地方。图片没有这些字段，`videoFootText` 返回空串，什么都不加。
+           */
+          (function () {
+            var isVideo = isVideoItem(item);
+            if (!isVideo) return null;
+            var foot = videoFootText(item);
+            return h("span", { className: "__dbi_g_lightboxModel" },
+              (foot === "" ? "" : foot + "  ") + (item.watermarkFree === false ? t("videoWatermarkBadge") : ""));
+          })(),
           h("button", {
             type: "button",
             className: "__dbi_g_btn",
@@ -1594,8 +1694,24 @@ window.__ModuleLoader__.load({
         h("div", { className: "__dbi_g_cardMeta" },
           h("span", { className: "__dbi_g_cardBadge", title: badge }, badge),
           h("span", { className: "__dbi_g_cardPrompt", title: item.prompt || "" }, item.prompt || t("noPrompt")),
-          h("span", { className: "__dbi_g_cardFoot" },
-            (itemRatio(item) || "") + "  " + relativeTime(item.createdAt, t, props.now))
+          /*
+           * 角标行：视频走 `时长 · 宽x高`，「带水印」单独挂一个醒目的小标签
+           * （只有明确 `false` 才挂——缺失是「不知道」，不该冒充成有水印）。
+           *
+           * 图片没有 duration/width，`videoFootText` 返回空串，这一行就退回
+           * 原来的「比例 + 相对时间」。
+           */
+          (function () {
+            var isVideo = isVideoItem(item);
+            var videoFoot = isVideo ? videoFootText(item) : "";
+            var foot = isVideo
+              ? (videoFoot !== "" ? videoFoot + "  " : "") + relativeTime(item.createdAt, t, props.now)
+              : (itemRatio(item) || "") + "  " + relativeTime(item.createdAt, t, props.now);
+            var watermark = isVideo && item.watermarkFree === false;
+            return h("span", { className: "__dbi_g_cardFoot" },
+              foot,
+              watermark ? h("span", { className: "__dbi_g_cardWarnBadge" }, t("videoWatermarkBadge")) : null);
+          })()
         )
       );
     }
@@ -2214,6 +2330,59 @@ window.__ModuleLoader__.load({
       var wsFields = workspaceFieldsFrom(props.cwd, props.sessionId);
 
       /*
+       * 视频开关（`video.enabled`）：决定工作台要不要渲染「图生视频」入口。
+       *
+       * 为什么在本 chunk 自己拉一次 `/api/status`：槽的 ownerProps 只有
+       * `locale/sessionId`，主 bundle 的 status 状态活在另一个组件作用域里，
+       * 跨槽共享它就得引入新的全局订阅，代价大于一次 GET。
+       *
+       * 缺省 `false` 是**保守**而不是「已知关闭」：拿不到配置时少一个入口，
+       * 好过让用户点进一个必然报 `video-disabled` 的模式。
+       */
+      var videoEnabledPair = react.useState(false);
+      var videoEnabled = videoEnabledPair[0];
+      var setVideoEnabled = videoEnabledPair[1];
+
+      /*
+       * 视频模型清单与默认值，同样来自 `/api/status` 的 `config`。
+       *
+       * `videoModels` 是 `[{key,label}]`，`videoModel` 是设置页选的默认档。
+       * 工作台自己的下拉就用这两项——**不在 studio chunk 里存第二份清单**，
+       * 否则设置页与工作台迟早会给出不同选项。
+       */
+      var videoModelsPair = react.useState([]);
+      var videoModels = videoModelsPair[0];
+      var setVideoModels = videoModelsPair[1];
+      var videoModelPair = react.useState("");
+      var videoDefaultModel = videoModelPair[0];
+      var setVideoDefaultModel = videoModelPair[1];
+
+      /*
+       * 每次切到工作台标签页都重读一次：设置页刚改完开关就切过来，
+       * 拿到旧值会让人以为「改了没生效」。
+       */
+      react.useEffect(function () {
+        if (active !== "studio") return undefined;
+        var alive = true;
+        fetch(BASE + "/api/status", { credentials: "same-origin" })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (data) {
+            if (!alive) return;
+            var config = data && data.ok === true && data.config ? data.config : null;
+            setVideoEnabled(Boolean(config && config.videoEnabled === true));
+            var list = config && Array.isArray(config.videoModels) ? config.videoModels : [];
+            setVideoModels(list.filter(function (item) {
+              return item && typeof item.key === "string" && item.key !== "";
+            }).map(function (item) {
+              return { key: item.key, label: typeof item.label === "string" && item.label !== "" ? item.label : item.key };
+            }));
+            setVideoDefaultModel(config && typeof config.videoModel === "string" ? config.videoModel : "");
+          })
+          .catch(function () { /* 读不到就保持当前值，不把入口闪掉 */ });
+        return function () { alive = false; };
+      }, [active]);
+
+      /*
        * 「灵感库 → 用它生图」的链路。
        *
        * 灵感库调 `onUsePrompt(prompt, item)`，容器把它存进 studioDraft 并切到
@@ -2348,27 +2517,6 @@ window.__ModuleLoader__.load({
         };
       }, [active]);
 
-      /**
-       * 「新建画布」按钮的跨 chunk 通道。
-       *
-       * 主 bundle 的按钮点击后既 dispatch 事件、又设全局 pending 标记。
-       * 这里两条都接：事件用于 chunk 已挂载时的热路径；pending 标记用于
-       * chunk 尚未加载（用户首次点按钮）时的冷路径——Mount 挂载后读标记
-       * 即可补上 setActive。
-       */
-      react.useEffect(function () {
-        if (typeof window === "undefined") return;
-        var onOpenStudio = function () { setActive("studio"); };
-        window.addEventListener("dsh-doubao-image:open-studio", onOpenStudio);
-        if (typeof globalThis !== "undefined" && globalThis.__dshDoubaoImageOpenStudio === true) {
-          globalThis.__dshDoubaoImageOpenStudio = false;
-          setActive("studio");
-        }
-        return function () {
-          window.removeEventListener("dsh-doubao-image:open-studio", onOpenStudio);
-        };
-      }, []);
-
       var current = null;
       for (var i = 0; i < TABS.length; i++) {
         if (TABS[i].id === active) current = TABS[i];
@@ -2441,6 +2589,11 @@ window.__ModuleLoader__.load({
           // 漏了它，工作台里点存画廊的图就永远没有归属——而生成路径
           // （走下面那个 onGenerate）是有的，症状只在「存画廊」按钮上。
           cwd: props.cwd,
+          // 视频开关：工作台靠它决定视频相关按键渲不渲染（不是置灰）。
+          videoEnabled: videoEnabled,
+          // 视频模型清单与默认档：同样由 Host 的 /api/status 提供唯一真相源。
+          videoModels: videoModels,
+          videoDefaultModel: videoDefaultModel,
           initialPrompt: studioDraft,
           // 工作台靠「有没有这个 prop」决定是「真出图」还是退回
           // 「复制一条指令」——所以这里必须是真函数，不能传 undefined。
@@ -2553,6 +2706,15 @@ window.__ModuleLoader__.load({
       ".__dbi_g_cardBadge{align-self:flex-start;max-width:100%;padding:0 6px;border-radius:8px;background:var(--dsw-alias-bg-layer-3);font-size:10px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".__dbi_g_cardPrompt{font-size:11px;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".__dbi_g_cardFoot{font-size:10px;color:var(--dsw-alias-label-secondary)}",
+      /*
+       * 「带水印」小标签。挂在 cardFoot 里面（角标行末尾），用暖色而不是
+       * 主色：它是提醒不是操作入口。只有明确 `watermarkFree === false`
+       * 才渲染，正常无水印的视频不出现这块，避免每条都挂导致提醒失效。
+       *
+       * 颜色全部走主题变量（项目规定 CSS 不许硬编码色值）：
+       * `warning-primary` 缺失时回退到橙色系，但不会写死十六进制。
+       */
+      ".__dbi_g_cardWarnBadge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:7px;background:color-mix(in srgb,var(--dsw-alias-state-warning-primary,orange) 16%,transparent);color:var(--dsw-alias-state-warning-primary,orange);font-size:9px;line-height:14px}",
       ".__dbi_g_empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:48px 16px;text-align:center}",
       ".__dbi_g_emptyIcon{font-size:26px}",
       ".__dbi_g_emptyTitle{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}",
@@ -2607,6 +2769,7 @@ window.__ModuleLoader__.load({
       pickLang: pickLang,
       makeT: makeT,
       itemRatio: itemRatio,
+      videoFootText: videoFootText,
       relativeTime: relativeTime,
       collectRatios: collectRatios,
       collectWorkspaces: collectWorkspaces,

@@ -146,6 +146,22 @@ window.__ModuleLoader__.load({
     ];
 
     /**
+     * 生视频可选时长（秒）。
+     *
+     * 豆包这条通道 1-10 秒都接，但面板只放三档：5 秒已要 ~2 分钟，10 秒
+     * 更久，把 1-10 每秒列一遍只是把选择成本推给用户。
+     */
+    var VIDEO_DURATIONS = [5, 8, 10];
+
+    /**
+     * 生视频只有豆包一条通道。
+     *
+     * GPT 免费账户不出视频，所以视频模式下提供商下拉只留豆包一项 ——
+     * 列一个选不动/选了必失败的 GPT 只会让人以为插件坏了。
+     */
+    var VIDEO_TOOL = "doubao_image";
+
+    /**
      * 豆包可选的生图模型，顺序即下拉顺序。
      *
      * 与 `lib/doubao.mjs` 的 DOUBAO_IMAGE_MODELS 必须一致——那里的注释说明了
@@ -196,6 +212,12 @@ window.__ModuleLoader__.load({
         generatePanel: "生成面板",
         modeGenerate: "文生图",
         modeEdit: "图生图",
+        modeVideo: "生视频",
+        videoRefsHint: "可选：传参考图就走图生视频，不传就是文生视频",
+        videoDurationLabel: "时长",
+        videoDurationOption: "{n} 秒",
+        videoModelLabel: "视频模型",
+        videoModelFollowDefault: "按设置页默认",
         referencesCount: "参考图 {current}/{max}",
         upload: "上传参考图",
         uploadHint: "点击选择，或把图片拖进来",
@@ -259,6 +281,7 @@ window.__ModuleLoader__.load({
         instructionTemplate: "请用 dsh-doubao-image-free 的 {tool} 工具生成 {count} 张图片。\n提示词：{prompt}\n比例：{ratio}",
         instructionEditTemplate: "请用 dsh-doubao-image-free 的 {tool} 工具，参考我从画廊选的图做图生图。\n提示词：{prompt}",
         instructionGptTemplate: "请用 dsh-doubao-image-free 的 {tool} 工具生成一张图片。\n提示词：{prompt}",
+        instructionVideoTemplate: "请用 dsh-doubao-image-free 的 {tool} 工具生成 {duration} 秒的视频（参考图 {refs} 张，0 张即文生视频）。\n提示词：{prompt}",
         copy: "复制",
         copied: "已复制",
         copyFailed: "复制失败",
@@ -295,6 +318,12 @@ window.__ModuleLoader__.load({
         generatePanel: "Generate",
         modeGenerate: "Text to image",
         modeEdit: "Image to image",
+        modeVideo: "Video",
+        videoRefsHint: "Optional: add a reference image for image-to-video, or leave it empty for text-to-video",
+        videoDurationLabel: "Duration",
+        videoDurationOption: "{n}s",
+        videoModelLabel: "Video model",
+        videoModelFollowDefault: "Use the Settings default",
         referencesCount: "References {current}/{max}",
         upload: "Upload a reference",
         uploadHint: "Click to pick, or drop an image here",
@@ -358,6 +387,7 @@ window.__ModuleLoader__.load({
         instructionTemplate: "Generate {count} images with the dsh-doubao-image-free {tool} tool.\nPrompt: {prompt}\nAspect ratio: {ratio}",
         instructionEditTemplate: "Use the dsh-doubao-image-free {tool} tool to edit the image I picked from the gallery.\nPrompt: {prompt}",
         instructionGptTemplate: "Generate one image with the dsh-doubao-image-free {tool} tool.\nPrompt: {prompt}",
+        instructionVideoTemplate: "Generate a {duration}s video with the dsh-doubao-image-free {tool} tool ({refs} reference image(s); 0 means text-to-video).\nPrompt: {prompt}",
         copy: "Copy",
         copied: "Copied",
         copyFailed: "Copy failed",
@@ -1218,10 +1248,33 @@ window.__ModuleLoader__.load({
       var modelPair = react.useState(readModelKey);
       var model = modelPair[0];
       var setModel = modelPair[1];
-      /** 文生图 / 图生图。 */
+      /** 文生图 / 图生图 / 生视频。 */
       var modePair = react.useState("generate");
       var mode = modePair[0];
       var setMode = modePair[1];
+      /**
+       * 视频开关（`video.enabled`）。决定视频相关按键是否渲染。
+       *
+       * 由容器经 `props.videoEnabled` 传入。缺省 `false` 是有意的保守默认：
+       * 拿不到配置时宁可少一个入口，也不要让用户点进一个必失败的模式。
+       */
+      var videoEnabled = props.videoEnabled === true;
+      /**
+       * 视频模型清单与设置页默认档。
+       *
+       * 唯一真相源是 Host 的 `/api/status`（`config.videoModels` /
+       * `config.videoModel`），由容器透传进来。**这里不留一份写死的清单**：
+       * 两边各存一份必然漂移，而漂移的症状是「设置页能选、生成时报模型不认识」。
+       */
+      var videoModels = Array.isArray(props.videoModels) ? props.videoModels : [];
+      /** 当前选的视频模型：空串＝跟随设置页默认值。 */
+      var videoModelPair = react.useState("");
+      var videoModel = videoModelPair[0];
+      var setVideoModel = videoModelPair[1];
+      /** 生视频时长（秒）。 */
+      var videoDurationPair = react.useState(5);
+      var videoDuration = videoDurationPair[0];
+      var setVideoDuration = videoDurationPair[1];
       var editorPair = react.useState(null);
       var editor = editorPair[0];
       var setEditor = editorPair[1];
@@ -1635,6 +1688,14 @@ window.__ModuleLoader__.load({
         if (mode === "edit") {
           return translate(lang, "instructionEditTemplate", { prompt: prompt, tool: toolLabel(lang, tool) });
         }
+        if (mode === "video") {
+          return translate(lang, "instructionVideoTemplate", {
+            prompt: prompt,
+            tool: toolLabel(lang, tool),
+            duration: String(videoDuration),
+            refs: String(references.length),
+          });
+        }
         if (!spec.supportsRatio) {
           return translate(lang, "instructionGptTemplate", { prompt: prompt, tool: toolLabel(lang, tool) });
         }
@@ -1653,6 +1714,11 @@ window.__ModuleLoader__.load({
           setNotice(t("needReference"));
           return;
         }
+        /*
+         * 视频**不再拦「必须有参考图」**：同一个「生视频」按钮承载两种意图，
+         * 有参考图走图生视频、没有就走文生视频（用户 2026-10-25 的明确要求）。
+         * 拦截留在这里的后果是「想文生视频却被要求传图」，而那正是要消灭的分支。
+         */
         setNotice("");
         var outgoing = text;
         /*
@@ -1663,8 +1729,10 @@ window.__ModuleLoader__.load({
          * completion_option / evaluate_option），张数完全由服务端读提示词
          * 自行决定。早先写成 `count > 1` 才注入，选「1」时等于什么都没说，
          * 实测被出了 4 张——控件选中 1 却出 4 张，用户会当成 bug。
+         *
+         * 视频没有张数概念（一次一个），所以视频模式既不注入也不显示该控件。
          */
-        if (spec.supportsCount) {
+        if (spec.supportsCount && mode !== "video") {
           outgoing = text + "\n\n" + (lang === "en"
             ? (count === 1 ? "Generate 1 image." : "Generate " + count + " images.")
             : "请生成 " + count + " 张图片。");
@@ -1676,18 +1744,42 @@ window.__ModuleLoader__.load({
           startGeneration(0);
           var outcome;
           try {
-            // 比例透传规则：不支持比例的 GPT 一律空串；豆包文生图传所选四档，
-            // 图生图传所选八档（auto＝按参考图，由网页端自行取景）。
-            var outgoingRatio = !spec.supportsRatio ? ""
+            /*
+             * 比例透传规则：不支持比例的 GPT 一律空串；豆包文生图传所选四档，
+             * 图生图传所选八档（auto＝按参考图，由网页端自行取景）。
+             * 视频**不传**：服务端两种视频都不接受面板比例（图生视频跟随
+             * 参考图、文生视频按 auto 取景），传一个用户没得选的值没有意义。
+             */
+            var outgoingRatio = mode === "video" ? ""
+              : !spec.supportsRatio ? ""
               : mode === "edit" ? normalizeEditRatio(editRatio)
               : normalizeRatio(generateRatio);
             // 这个 bundle 保持 ES5 语法（不依赖构建期降级），所以不用展开运算符。
             var generateOptions = {
               mode: mode,
-              references: mode === "edit" ? references.map(function (reference) { return reference.file; }) : [],
+              /*
+               * 参考图对视频是**可选**输入：有就带（图生视频），没有就空数组
+               * （文生视频）。`edit` 分支仍然先过上面的「必须有图」守卫。
+               */
+              references: (mode === "edit" || mode === "video")
+                ? references.map(function (reference) { return reference.file; })
+                : [],
             };
-            // 模型只有豆包通道有；GPT 免费通道由服务端固定，不传。
-            if (spec.supportsRatio) generateOptions.model = model;
+            /*
+             * 模型分两套，**不能混**：
+             *   - 生图：`DOUBAO_MODELS` 里的图片模型显示名（`Seedream 5.0 Flash`）；
+             *   - 生视频：设置页那份视频模型标识（`seedance_v2.0_mini` /
+             *     `seedance_2.0_pc`），由 `props.videoModels` 透传。
+             * 2026-10-24 实测：把图片模型名漏进视频请求，服务端 200 但不出片，
+             * 且没有任何报错——所以两者必须走不同分支。
+             */
+            if (mode === "video") {
+              if (typeof videoModel === "string" && videoModel !== "") generateOptions.model = videoModel;
+            } else if (spec.supportsRatio) {
+              generateOptions.model = model;
+            }
+            // 时长只对视频有意义，其它模式不传，免得 Host 误判成视频请求。
+            if (mode === "video") generateOptions.duration = videoDuration;
             outcome = props.onGenerate(outgoing, outgoingRatio, tool, generateOptions);
           } catch (error) {
             finishGeneration();
@@ -2183,7 +2275,15 @@ window.__ModuleLoader__.load({
 
       /* ── 右栏：生成面板 ───────────────────────────────────────────── */
 
-      var referencesField = mode === "edit" ? h("div", { className: "__dbi_s_field" },
+      /*
+       * 参考图区：图生图必须有，生视频可选。
+       *
+       * 生视频下**常驻**是刻意的——它是「图生 / 文生」的唯一分流开关，藏起来
+       * 用户就没法上传了。提示文案要说明「不传就是文生视频」，否则「可选」
+       * 这件事在界面上看不出来。
+       */
+      var referencesField = (mode === "edit" || mode === "video") ? h("div", { className: "__dbi_s_field" },
+        mode === "video" ? h("span", { className: "__dbi_s_hint" }, t("videoRefsHint")) : null,
         h("div", { className: "__dbi_s_fieldLabel" },
           h("label", { htmlFor: "__dbi_s_refs" }, t("referencesCount", {
             current: String(references.length),
@@ -2242,25 +2342,63 @@ window.__ModuleLoader__.load({
         })
       ) : null;
 
+      /*
+       * 提供商清单按模式收窄：视频只有豆包一条通道（GPT 免费账户不出视频）。
+       *
+       * 不用「禁用 GPT 选项」而是**根本不列**：禁用项会被理解成「再充点钱
+       * 就能用」，而这个通道压根不存在。用户 2026-10-25 明确要求 GPT 不出现在
+       * 生视频的提供商菜单里。
+       */
+      var providerOptions = mode === "video"
+        ? TOOLS.filter(function (item) { return item.key === VIDEO_TOOL; })
+        : TOOLS;
+      /*
+       * 手里拿着的 tool 可能不在当前模式的可选范围里（例如从「文生图+GPT」
+       * 直接切到「生视频」）。这时不静默留着一个不存在的通道，而是渲染时
+       * 就按视频通道显示；真正切换发生在下面的模式按钮 onClick 里。
+       */
+      var effectiveTool = mode === "video" ? VIDEO_TOOL : tool;
+
       var providerField = h("div", { className: "__dbi_s_fieldGrid" },
         h("label", { className: "__dbi_s_fieldSelect" },
           h("span", null, t("provider")),
           h("select", {
             className: "__dbi_s_select",
-            value: tool,
+            value: effectiveTool,
             "aria-label": t("provider"),
             onChange: function (event) {
               var next = event.target.value;
               setTool(next);
               writeToolKey(next);
             },
-          }, TOOLS.map(function (item) {
+          }, providerOptions.map(function (item) {
             return h("option", { key: item.key, value: item.key }, toolLabel(lang, item.key));
           }))
         ),
         h("label", { className: "__dbi_s_fieldSelect" },
-          h("span", null, t("model")),
-          spec.supportsRatio
+          h("span", null, mode === "video" ? t("videoModelLabel") : t("model")),
+          /*
+           * 生视频的模型是另一套标识（`seedance_v2.0_mini` / `seedance_2.0_pc`），
+           * 清单来自 Host 的 `/api/status`，与图片模型下拉不是同一个体系。
+           * 视频下渲染真下拉（不再是禁用说明项）：两档要能选。
+           */
+          mode === "video"
+            ? h("select", {
+              className: "__dbi_s_select",
+              value: videoModel,
+              "aria-label": t("videoModelLabel"),
+              onChange: function (event) { setVideoModel(event.target.value); },
+            },
+              /*
+               * 空串＝跟随设置页默认档。这一项必须在：用户没主动选过时，
+               * 界面要如实显示「按设置页」而不是硬塞一个模型名假装已选。
+               */
+              h("option", { key: "__default", value: "" }, t("videoModelFollowDefault")),
+              videoModels.map(function (item) {
+                return h("option", { key: item.key, value: item.key }, item.label);
+              })
+            )
+            : spec.supportsRatio
             ? h("select", {
               className: "__dbi_s_select",
               value: model,
@@ -2287,7 +2425,16 @@ window.__ModuleLoader__.load({
         )
       );
 
-      var ratioField = spec.supportsRatio && mode === "edit"
+      /*
+       * 比例字段：生视频下一律不渲染（连说明都不留）。
+       *
+       * 服务端两种视频都不吃面板比例 —— 图生视频跟随参考图的画幅、文生视频
+       * 按 auto 取景。渲染一个选了也不生效的下拉是骗人；渲染「不支持比例」
+       * 的说明又占版面，用户要的是这块直接消失（2026-10-25 要求）。
+       */
+      var ratioField = mode === "video"
+        ? null
+        : spec.supportsRatio && mode === "edit"
         ? h("div", { className: "__dbi_s_fieldGrid" },
           h("label", { className: "__dbi_s_fieldSelect" },
             h("span", null, t("ratio")),
@@ -2316,7 +2463,12 @@ window.__ModuleLoader__.load({
         )
       ) : h("div", { className: "__dbi_s_inlineNote" }, t("gptNoRatio"));
 
-      var countField = spec.supportsCount ? h("div", { className: "__dbi_s_field" },
+      /*
+       * 张数字段：生视频下同样不渲染。视频一次只出一个，四档按钮全是假的
+       * 选择；Host 侧视频分支也根本不读这个参数。
+       */
+      var countField = mode === "video" ? null
+        : spec.supportsCount ? h("div", { className: "__dbi_s_field" },
         h("label", null, t("count")),
         h("div", { className: "__dbi_s_countRow" },
           COUNTS.map(function (option) {
@@ -2366,7 +2518,7 @@ window.__ModuleLoader__.load({
           }, "›")
         ),
         h("div", { className: "__dbi_s_generatorForm" },
-          h("div", { className: "__dbi_s_modeSwitch", role: "group" },
+          h("div", { className: "__dbi_s_modeSwitch" + (videoEnabled ? " has-video" : ""), role: "group" },
             h("button", {
               type: "button",
               className: mode === "generate" ? "is-active" : "",
@@ -2376,9 +2528,46 @@ window.__ModuleLoader__.load({
               type: "button",
               className: mode === "edit" ? "is-active" : "",
               onClick: function () { setMode("edit"); },
-            }, t("modeEdit"))
+            }, t("modeEdit")),
+            /*
+             * 生视频入口**只在视频开关打开时渲染**（不是禁用/置灰）。
+             * 用户 2026-10-23 明确要求：关闭生视频功能时所有视频按键都消失。
+             * 置灰仍占位，会被当成「这个功能坏了」。
+             *
+             * 一个按钮承载两种意图：参考图可有可无，有就走图生视频、没有就
+             * 文生视频（用户 2026-10-25 要求合并掉原来的「图生视频」独立 tab）。
+             * 切进来时顺手把通道切成豆包——视频只有它一条路。
+             */
+            videoEnabled ? h("button", {
+              type: "button",
+              className: mode === "video" ? "is-active" : "",
+              onClick: function () {
+                setMode("video");
+                setTool(VIDEO_TOOL);
+                writeToolKey(VIDEO_TOOL);
+              },
+            }, t("modeVideo")) : null
           ),
           referencesField,
+          /*
+           * 时长只在生视频出现。豆包这条通道 1-10 秒，实测 5 秒片段
+           * 约 2 分钟出片。放参考图下面，因为时长是「这条路」的参数。
+           */
+          mode === "video" ? h("div", { className: "__dbi_s_field" },
+            h("div", { className: "__dbi_s_fieldLabel" },
+              h("label", { htmlFor: "__dbi_s_videoDuration" }, t("videoDurationLabel"))
+            ),
+            h("select", {
+              id: "__dbi_s_videoDuration",
+              className: "__dbi_s_select",
+              value: String(videoDuration),
+              onChange: function (event) {
+                if (event && event.target) setVideoDuration(Number(event.target.value) || 5);
+              },
+            }, VIDEO_DURATIONS.map(function (seconds) {
+              return h("option", { key: String(seconds), value: String(seconds) }, t("videoDurationOption", { n: String(seconds) }));
+            }))
+          ) : null,
           h("div", { className: "__dbi_s_field" },
             h("div", { className: "__dbi_s_fieldLabel" },
               h("label", { htmlFor: "__dbi_s_prompt" }, t("promptLabel")),

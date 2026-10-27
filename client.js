@@ -473,6 +473,22 @@ window.__ModuleLoader__.load({
           if (typeof item[key] === "string" && item[key] !== "") record[key] = item[key];
         });
         if (typeof item.seed === "number") record.seed = item.seed;
+        /*
+         * 视频卡片的角标字段。
+         *
+         * 视频记录**没有 mediaType**，卡片上「5 秒」「720x720」「无水印」三个
+         * 角标只能靠这几个数画。它们不在上面的 `optional`(仅字符串) 里，也
+         * 不在布尔分支里——漏掉时写进 IndexedDB 就是残缺记录，同一份 record
+         * 又原样 POST 给服务端，所以 `gallery.json` 里也没有。表现是：刚生成
+         * 完看着正常（内存里那个对象还在），一刷新角标全变空白。
+         *
+         * `watermarkFree` 只在**真的知道**时写：`false` 是「知道带水印」，
+         * 缺失是「不知道」，两者在 UI 上不同，不能合并。
+         */
+        ["duration", "width", "height"].forEach(function (key) {
+          if (typeof item[key] === "number" && isFinite(item[key])) record[key] = item[key];
+        });
+        if (typeof item.watermarkFree === "boolean") record.watermarkFree = item.watermarkFree;
         if (Array.isArray(item.tags)) record.tags = item.tags.slice();
         if (Array.isArray(item.sourceAttachmentIds)) record.sourceAttachmentIds = item.sourceAttachmentIds.slice();
 
@@ -1214,9 +1230,12 @@ window.__ModuleLoader__.load({
       settingsDefaultSize: "默认尺寸",
       settingsDefaultSizeHint: "如 1024x1024；会被吸附到豆包支持的 1:1 / 4:3 / 16:9 / 9:16 比例。",
       settingsVideo: "启用视频生成",
-      settingsVideoHint: "默认关闭。豆包生视频较慢且带水印。",
+      settingsVideoHint: "默认关闭。豆包生视频较慢，且消耗每日免费额度。",
       settingsVideoModel: "视频模型",
+      settingsVideoModelHint: "工作台生成时可临时改；这里定的是默认档。",
       settingsVideoDuration: "默认视频时长（秒）",
+      settingsVideoRemoveWatermark: "去掉视频水印",
+      settingsVideoRemoveWatermarkHint: "开（默认）：下载豆包的无水印流。关：保留豆包烧录的「豆包 AI 生成」水印，适合需要标注 AI 来源的平台。",
       settingsInvalidNumber: "超时、时长必须是正整数",
       settingsInvalidSize: "默认尺寸格式应为 宽x高，如 1024x1024",
 
@@ -1225,7 +1244,7 @@ window.__ModuleLoader__.load({
       resultProviderDoubao: "豆包",
       resultProviderGpt: "ChatGPT",
       resultPromoted: "图片已显示在下方对话中。",
-      resultVideoHint: "视频已生成（带豆包水印）。文件路径见上方工具输出，可自行打开。",
+      resultVideoHint: "视频已生成。文件路径见上方工具输出，可自行打开。",
       // 多图结果的张数行。曾漏定义：`t()` 拿不到 key 会把 key 本身当文案渲染，
       // 于是多图卡片上直接显示字符串 "resultCount"。文案与 galleryCount 对齐。
       resultCount: "共 {n} 张",
@@ -1244,6 +1263,7 @@ window.__ModuleLoader__.load({
       galleryNoRoute: "宿主未提供取图路由，无法显示缩略图。",
       galleryUnavailable: "当前浏览器不支持 IndexedDB，画廊不可用。",
       galleryEmpty: "画廊还是空的——生成一张图后会自动出现在这里。",
+      galleryImagesOnly: "这里只列图片。视频不在此显示，请到「画廊」标签页查看。",
       galleryLoading: "加载中…",
       galleryCount: "共 {n} 张",
       galleryFilterAll: "全部工作区",
@@ -1260,9 +1280,6 @@ window.__ModuleLoader__.load({
       galleryClose: "关闭",
       galleryDetail: "详情",
       galleryNoPrompt: "（无提示词）",
-
-      newCanvas: "画布",
-      newCanvasTip: "打开工作台",
 
       // ── D4 provider 状态徽章 ─────────────────────────────────────────
       statusProviderTitle: "通道状态",
@@ -1348,9 +1365,12 @@ window.__ModuleLoader__.load({
       settingsDefaultSize: "Default size",
       settingsDefaultSizeHint: "e.g. 1024x1024; snapped to Doubao's supported 1:1 / 4:3 / 16:9 / 9:16 ratios.",
       settingsVideo: "Enable video generation",
-      settingsVideoHint: "Off by default. Doubao video is slow and watermarked.",
+      settingsVideoHint: "Off by default. Doubao video is slow and uses the daily free quota.",
       settingsVideoModel: "Video model",
+      settingsVideoModelHint: "The workshop can override this per run; this value is the default.",
       settingsVideoDuration: "Default video duration (seconds)",
+      settingsVideoRemoveWatermark: "Remove video watermark",
+      settingsVideoRemoveWatermarkHint: "On (default): download Doubao's watermark-free stream. Off: keep the burned-in \"Doubao AI generated\" watermark, for platforms that require labeling AI content.",
       settingsInvalidNumber: "Timeout and duration must be positive integers",
       settingsInvalidSize: "Size must look like WIDTHxHEIGHT, e.g. 1024x1024",
 
@@ -1359,7 +1379,7 @@ window.__ModuleLoader__.load({
       resultProviderDoubao: "Doubao",
       resultProviderGpt: "ChatGPT",
       resultPromoted: "The image is shown in the conversation below.",
-      resultVideoHint: "Video generated (with a Doubao watermark). Its file path is in the tool output above.",
+      resultVideoHint: "Video generated. Its file path is in the tool output above.",
       resultCount: "{n} images",
       resultSavedTo: "Saved to ",
 
@@ -1376,6 +1396,7 @@ window.__ModuleLoader__.load({
       galleryNoRoute: "The host exposes no image route, so thumbnails cannot be loaded.",
       galleryUnavailable: "This browser has no IndexedDB support; the gallery is unavailable.",
       galleryEmpty: "The gallery is empty — generate an image and it appears here.",
+      galleryImagesOnly: "Images only here. Videos are not shown in Settings — open the Gallery tab instead.",
       galleryLoading: "Loading…",
       galleryCount: "{n} items",
       galleryFilterAll: "All workspaces",
@@ -1392,9 +1413,6 @@ window.__ModuleLoader__.load({
       galleryClose: "Close",
       galleryDetail: "Details",
       galleryNoPrompt: "(no prompt)",
-
-      newCanvas: "Canvas",
-      newCanvasTip: "Open the studio",
 
       // ── D4 provider status badge ─────────────────────────────────────
       statusProviderTitle: "Provider status",
@@ -1418,8 +1436,15 @@ window.__ModuleLoader__.load({
       { key: "timeoutSec", path: ["image", "timeoutMs"], kind: "intSeconds", toStored: function (v) { return v * 1000; }, label: "settingsTimeout", hint: "settingsTimeoutHint" },
       { key: "defaultSize", path: ["image", "defaultSize"], kind: "size", label: "settingsDefaultSize", hint: "settingsDefaultSizeHint" },
       { key: "videoEnabled", path: ["video", "enabled"], kind: "checkbox", label: "settingsVideo", hint: "settingsVideoHint" },
-      { key: "videoModel", path: ["video", "model"], kind: "text", label: "settingsVideoModel" },
+      /*
+       * 视频模型从自由文本改成下拉：可选值由 Host 的 `/api/status`
+       * （`config.videoModels`）给出，工作台每次生成也能单独覆盖。
+       * 不在客户端另存一份清单——两份清单必然漂移，而漂移的表现是
+       * 「设置页能选，生成时报模型不认识」，最难查。
+       */
+      { key: "videoModel", path: ["video", "model"], kind: "select", label: "settingsVideoModel", hint: "settingsVideoModelHint" },
       { key: "videoDuration", path: ["video", "defaultDurationSec"], kind: "int", label: "settingsVideoDuration" },
+      { key: "videoRemoveWatermark", path: ["video", "removeWatermark"], kind: "checkbox", label: "settingsVideoRemoveWatermark", hint: "settingsVideoRemoveWatermarkHint" },
       { key: "proxyUrl", path: ["gpt", "proxyUrl"], kind: "text", label: "gptProxy", hint: "gptProxyHint" },
       { key: "galleryEnabled", path: ["gallery", "enabled"], kind: "checkbox", label: "galleryEnabled", hint: "galleryEnabledHint" },
       { key: "reuseConversation", path: ["image", "reuseConversation"], kind: "checkbox", label: "reuseConversation", hint: "reuseConversationHint" },
@@ -1432,6 +1457,7 @@ window.__ModuleLoader__.load({
       videoEnabled: false,
       videoModel: "seedance_v2.0_mini",
       videoDuration: 5,
+      videoRemoveWatermark: true,
       proxyUrl: "http://127.0.0.1:7897",
       galleryEnabled: true,
       reuseConversation: false,
@@ -1476,8 +1502,42 @@ window.__ModuleLoader__.load({
       if (field.kind === "size") return parseSize(raw);
       if (field.kind === "int") return parsePositiveInt(raw, 3600);
       if (field.kind === "intSeconds") return parsePositiveInt(raw, 3600);
+      /*
+       * select 的合法值只能由调用方给的清单判定（这里拿不到清单），所以
+       * 只校验「是非空字符串」；真正的取舍在 Host 的 `normalizeVideoModel`。
+       * 硬编码一份选项到校验器里就等于在客户端再存一份清单。
+       */
+      if (field.kind === "select") return typeof raw === "string" && raw.trim() !== "" ? raw.trim() : null;
       if (field.kind === "text") return typeof raw === "string" ? raw.trim() : null;
       return null;
+    }
+
+    /**
+     * 下拉字段的可选项。
+     *
+     * 唯一数据源是 `/api/status` 的 `config.videoModels`（由 Host 的
+     * `DOUBAO_VIDEO_MODELS` 派生）。**不要在这里写死一组模型名**：
+     * 客户端 bundle 拿不到 lib 常量，写死就等于第二份清单，而它一旦与
+     * Host 漂移，用户会看到「设置页能选、生成时报模型不认识」。
+     *
+     * 读不到状态（还没加载完 / 请求失败）时返回空数组，渲染层会退化成
+     * 只显示当前值，用户不会因此丢掉已存配置。
+     *
+     * 写成模块级纯函数（`status` 作为参数）而不是闭包内函数：闭包内的
+     * 版本只能靠渲染整棵组件树才能断言，而这条判据的关键是**清单从哪来**
+     * ——纯函数能直接喂一个假 status 验完，不必造 DOM。
+     */
+    function selectOptionsFrom(field, status) {
+      if (field.key === "videoModel") {
+        var list = status && status.config && status.config.videoModels;
+        if (!Array.isArray(list)) return [];
+        return list
+          .filter(function (item) { return item && typeof item.key === "string" && item.key !== ""; })
+          .map(function (item) {
+            return { key: item.key, label: typeof item.label === "string" && item.label !== "" ? item.label : item.key };
+          });
+      }
+      return [];
     }
 
     // ── 小组件 ───────────────────────────────────────────────────────────
@@ -1639,15 +1699,28 @@ window.__ModuleLoader__.load({
       if (state.status === "unavailable") return h("p", { className: "__dbi_hint" }, t("galleryUnavailable"));
 
       var items = state.items;
+      /*
+       * 设置页只列图片，视频一律不显示（用户 2026-10-25 要求）。
+       *
+       * 原因：这里的缩略图是 `<img>`，而视频是 mp4 —— `<img>` 解不了，浏览器
+       * 只会渲染成破图加一行 alt 文字（正是用户截图里那 5 个卡片）。要修好
+       * 得在这里塞 `<video>`，但那会让设置页承担媒体播放的复杂度；而「画廊」
+       * 标签页本来就有完整的视频卡（首帧 + 灯箱），所以设置页直接让位。
+       *
+       * 注意「清空全部」仍然清**整个**画廊（含视频），所以下面多给一行提示，
+       * 免得用户以为这里看不到的视频不会被删。
+       */
+      var imageItems = items.filter(function (item) { return !gallery.isVideoItem(item); });
+      var hasHiddenVideos = imageItems.length !== items.length;
       // 工作区过滤：用 gallery.isItemInWorkspace 的同一套判据，不另写一份。
       var workspacePaths = [];
-      items.forEach(function (item) {
+      imageItems.forEach(function (item) {
         var path = typeof item.workspacePath === "string" ? item.workspacePath : "";
         if (path !== "" && workspacePaths.indexOf(path) === -1) workspacePaths.push(path);
       });
       workspacePaths.sort();
 
-      var visible = items.filter(function (item) {
+      var visible = imageItems.filter(function (item) {
         if (filter.favoritesOnly && item.isFavorite !== true) return false;
         if (filter.workspace === "") return true;
         return gallery.isItemInWorkspace(item, { path: filter.workspace });
@@ -1678,9 +1751,10 @@ window.__ModuleLoader__.load({
       return h("div", { className: "__dbi_group" },
         h("div", { className: "__dbi_row" },
           h("span", { className: "__dbi_label" }, t("galleryTitle")),
-          h("span", { className: "__dbi_badge" }, t("galleryCount", { n: items.length }))
+          h("span", { className: "__dbi_badge" }, t("galleryCount", { n: imageItems.length }))
         ),
         !routeOk ? h("p", { className: "__dbi_error" }, t("galleryNoRoute")) : null,
+        hasHiddenVideos ? h("p", { className: "__dbi_hint" }, t("galleryImagesOnly")) : null,
         h("div", { className: "__dbi_row" },
           workspacePaths.length > 0
             ? h("label", { className: "__dbi_field", style: { flexDirection: "row", alignItems: "center", gap: 6 } },
@@ -1701,7 +1775,8 @@ window.__ModuleLoader__.load({
         state.status === "loading"
           ? h("p", { className: "__dbi_empty" }, t("galleryLoading"))
           : visible.length === 0
-            ? h("p", { className: "__dbi_empty" }, t("galleryEmpty"))
+            /* 只有视频、没有图片时不能说「画廊还是空的」——用户会以为视频丢了。 */
+            ? h("p", { className: "__dbi_empty" }, t(hasHiddenVideos ? "galleryImagesOnly" : "galleryEmpty"))
             : h("div", { className: "__dbi_grid" },
                 visible.map(function (item) {
                   return h("div", { key: item.id, className: "__dbi_tile" },
@@ -1877,7 +1952,7 @@ window.__ModuleLoader__.load({
       var statusPair = react.useState(null);
       var status = statusPair[0];
       var setStatus = statusPair[1];
-      var draftPair = react.useState({ timeoutSec: "", defaultSize: "", videoModel: "", videoDuration: "", proxyUrl: "", videoEnabled: null, galleryEnabled: null, reuseConversation: null, autoSwitchAccount: null });
+      var draftPair = react.useState({ timeoutSec: "", defaultSize: "", videoModel: "", videoDuration: "", videoRemoveWatermark: null, proxyUrl: "", videoEnabled: null, galleryEnabled: null, reuseConversation: null, autoSwitchAccount: null });
       var draft = draftPair[0];
       var setDraft = draftPair[1];
       var cookiePair = react.useState("");
@@ -2032,6 +2107,7 @@ window.__ModuleLoader__.load({
         if (field.key === "videoEnabled") stored = videoValue.enabled;
         else if (field.key === "videoModel") stored = videoValue.model;
         else if (field.key === "videoDuration") stored = videoValue.defaultDurationSec;
+        else if (field.key === "videoRemoveWatermark") stored = videoValue.removeWatermark;
         else if (field.key === "galleryEnabled") stored = galleryValue.enabled;
         else if (field.key === "reuseConversation") stored = imageValue.reuseConversation;
         else if (field.key === "autoSwitchAccount") stored = doubaoValue.autoSwitchAccount;
@@ -2060,6 +2136,11 @@ window.__ModuleLoader__.load({
         clearNotice();
       }
 
+      /** 组件内的取法：把当前的 `status` 塞进模块级纯函数。 */
+      function selectOptions(field) {
+        return selectOptionsFrom(field, status);
+      }
+
       /**
        * 配置保存：校验 → 按 `field.path` 逐字段写 → 一次 mutate。
        *
@@ -2076,7 +2157,7 @@ window.__ModuleLoader__.load({
         var built = buildConfigOps(fieldValue);
         if (built.error) { error2({ key: "error", detailKey: built.error }); return; }
         runWrite(built.ops, function () {
-          setDraft({ timeoutSec: "", defaultSize: "", videoModel: "", videoDuration: "", proxyUrl: "", videoEnabled: null, galleryEnabled: null, reuseConversation: null, autoSwitchAccount: null });
+          setDraft({ timeoutSec: "", defaultSize: "", videoModel: "", videoDuration: "", videoRemoveWatermark: null, proxyUrl: "", videoEnabled: null, galleryEnabled: null, reuseConversation: null, autoSwitchAccount: null });
         });
       }
 
@@ -2392,6 +2473,34 @@ window.__ModuleLoader__.load({
                 field.hint ? h("span", { className: "__dbi_hint" }, t(field.hint)) : null
               );
             }
+            /*
+             * 下拉字段（目前只有视频模型）。
+             *
+             * 选项来自 `/api/status` 的 `config.videoModels` —— Host 是唯一
+             * 真相源（`lib/doubao-core.mjs` 的 DOUBAO_VIDEO_MODELS）。读不到
+             * 状态时退回一个空清单 + 当前值，保证既不会崩，也不会把用户
+             * 已存的模型名悄悄改成别的。
+             */
+            if (field.kind === "select") {
+              var options = selectOptions(field);
+              var current = String(fieldValue(field));
+              var known = options.some(function (item) { return item.key === current; });
+              return h("label", { key: field.key, className: "__dbi_field" },
+                h("span", { className: "__dbi_label" }, t(field.label)),
+                field.hint ? h("span", { className: "__dbi_hint" }, t(field.hint)) : null,
+                h("select", {
+                  className: "__dbi_input",
+                  value: current,
+                  disabled: busy || !writable,
+                  onChange: function (e) { setField(field, e.target.value); },
+                },
+                  known ? null : h("option", { value: current }, current),
+                  options.map(function (item) {
+                    return h("option", { key: item.key, value: item.key }, item.label);
+                  })
+                )
+              );
+            }
             return h("label", { key: field.key, className: "__dbi_field" },
               h("span", { className: "__dbi_label" }, t(field.label)),
               field.hint ? h("span", { className: "__dbi_hint" }, t(field.hint)) : null,
@@ -2534,6 +2643,11 @@ window.__ModuleLoader__.load({
         model: typeof meta.model === "string" ? meta.model : "",
         ratio: typeof meta.ratio === "string" ? meta.ratio : "",
         duration: typeof meta.duration === "number" && isFinite(meta.duration) ? meta.duration : 0,
+        // 会话历史回填走的也是同一条入库路径，所以宽高与水印标记要一起投影，
+        // 否则「刚生成的有角标、重开会话后没了」。
+        width: typeof meta.width === "number" && isFinite(meta.width) ? meta.width : undefined,
+        height: typeof meta.height === "number" && isFinite(meta.height) ? meta.height : undefined,
+        watermarkFree: typeof meta.watermarkFree === "boolean" ? meta.watermarkFree : undefined,
         path: typeof meta.path === "string" ? meta.path : "",
         kind: gallery.VIDEO_KIND,
       };
@@ -2800,6 +2914,12 @@ window.__ModuleLoader__.load({
           model: model,
           kind: gallery.VIDEO_KIND,
           aspectRatio: result && typeof result.ratio === "string" ? result.ratio : "",
+          // 角标数据（时长 / 宽高 / 免水印）：视频的 attachment 里没有这些，
+          // 只能走记录级字段。`saveGalleryItem` 的白名单要认得它们。
+          duration: result && typeof result.duration === "number" ? result.duration : undefined,
+          width: result && typeof result.width === "number" ? result.width : undefined,
+          height: result && typeof result.height === "number" ? result.height : undefined,
+          watermarkFree: result && typeof result.watermarkFree === "boolean" ? result.watermarkFree : undefined,
         }, gallery.workspaceFieldsFrom(props.cwd, props.sessionId)));
       }, [attachment, state.url, prompt, model, result, props.cwd, props.sessionId]);
 
@@ -3109,159 +3229,10 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 用户输入关键词拦截：监听对话区新消息，匹配「新建画布」等关键词后
-     * 自动打开工作台。
-     *
-     * 实现：MutationObserver 监听 document.body 子树，当有新节点加入时
-     * 扫描其文本内容，匹配关键词即触发 openStudioTab()。
-     *
-     * 防重复触发：
-     * 1. 已触发的 sessionId 记录在一个 Set 里，同一 sessionId 只触发一次
-     * 2. 全局 30 秒节流，防止短时间多次触发
-     *
-     * 注意：这里只是额外监听，不阻止消息正常发送。
-     */
-    var STUDIO_KEYWORD_RE = /新建画布|打开画布|new\s*canvas|创建工作台|打开工作台/i;
-    var studioTriggeredSessions = new Set();
-    var studioLastTriggerTime = 0;
-    /** apply 内绑定的 locale t 函数，供 openStudioTab 取「画廊」文案。 */
-    var studioT = null;
-
-    /**
-     * 切换到画廊标签页并打开工作台。
-     *
-     * 提取自原按钮的 onClick 逻辑，现在由关键词拦截触发。
-     *
-     * @param {string|undefined} sessionId 当前会话 ID，用于写 localStorage view 偏好
-     */
-    function openStudioTab(sessionId) {
-      // 找到 conversation.view 标签按钮并模拟点击
-      try {
-        var galleryLabel = studioT ? studioT("galleryTitle") : "画廊";
-        var tabsContainer = document.querySelector('[data-conversation-tabs]');
-        if (tabsContainer) {
-          var tabBtns = tabsContainer.querySelectorAll('button');
-          for (var i = 0; i < tabBtns.length; i++) {
-            var btnText = tabBtns[i].textContent || "";
-            var btnId = tabBtns[i].getAttribute("data-tab-id") || tabBtns[i].getAttribute("aria-label") || "";
-            if (btnId === "doubao-gallery" || btnText.indexOf(galleryLabel) >= 0) {
-              tabBtns[i].click();
-              break;
-            }
-          }
-        } else {
-          // 新会话可能没有标签页容器，尝试直接找所有按钮中含「画廊」的
-          var allBtns = document.querySelectorAll('button');
-          for (var j = 0; j < allBtns.length; j++) {
-            var txt = allBtns[j].textContent || "";
-            if (txt.indexOf(galleryLabel) >= 0) {
-              allBtns[j].click();
-              break;
-            }
-          }
-        }
-      } catch (e) {
-        console.warn("[doubao-image] tab click failed:", e && e.message);
-      }
-
-      // 写 localStorage view 偏好（仅当有 sessionId 时）
-      if (sessionId !== undefined) {
-        try {
-          var storeKey = "dsh.conversation." + sessionId;
-          var raw = localStorage.getItem(storeKey);
-          var stored = raw !== null ? JSON.parse(raw) : {};
-          stored.view = "doubao-gallery";
-          localStorage.setItem(storeKey, JSON.stringify(stored));
-        } catch (e) {
-          console.warn("[doubao-image] localStorage write failed:", e && e.message);
-        }
-      }
-      if (typeof globalThis !== "undefined") {
-        globalThis.__dshDoubaoImageOpenStudio = true;
-      }
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("dsh-doubao-image:open-studio"));
-      }
-    }
-
-    function tryInterceptStudioKeyword(node) {
-      if (!node || !node.textContent) return;
-      var text = node.textContent;
-      if (!STUDIO_KEYWORD_RE.test(text)) return;
-
-      // 30 秒节流
-      var now = Date.now();
-      if (now - studioLastTriggerTime < 30000) return;
-
-      // 尝试从 DOM 找当前 sessionId（从最近的 [data-session-id] 属性）
-      var sessionId = undefined;
-      try {
-        var sessionEl = node.closest && node.closest('[data-session-id]');
-        if (sessionEl) {
-          sessionId = sessionEl.getAttribute('data-session-id') || undefined;
-        }
-      } catch (_) {}
-
-      // 如果 sessionId 已知且已触发过，跳过
-      if (sessionId !== undefined && studioTriggeredSessions.has(sessionId)) return;
-
-      // 标记已触发
-      if (sessionId !== undefined) {
-        studioTriggeredSessions.add(sessionId);
-      }
-      studioLastTriggerTime = now;
-
-      console.log("[doubao-image] intercepted studio keyword, opening studio tab", { sessionId: sessionId });
-      openStudioTab(sessionId);
-    }
-
-    /**
-     * 启动 MutationObserver 监听用户输入。
-     *
-     * 只在浏览器环境（有 document.body）下启动；Node 环境（自测）跳过。
-     *
-     * 监听策略：观察 document.body 的子树，当有新节点加入时，
-     * 扫描其文本内容是否包含关键词。为了避免频繁遍历，只在
-     * 新增节点数量较少时检查（大量节点变更通常是页面切换）。
-     */
-    function startStudioKeywordInterceptor() {
-      if (typeof document === "undefined" || !document.body) return;
-      if (typeof MutationObserver === "undefined") return;
-
-      var observer = new MutationObserver(function (mutations) {
-        for (var m = 0; m < mutations.length; m++) {
-          var mutation = mutations[m];
-          if (mutation.type !== 'childList') continue;
-          var addedNodes = mutation.addedNodes;
-          if (!addedNodes || addedNodes.length === 0) continue;
-          // 大量节点变更通常是页面切换，跳过以避免误触发
-          if (addedNodes.length > 50) continue;
-          for (var n = 0; n < addedNodes.length; n++) {
-            var node = addedNodes[n];
-            // 只检查元素节点和文本节点
-            if (node.nodeType !== 1 && node.nodeType !== 3) continue;
-            tryInterceptStudioKeyword(node);
-          }
-        }
-      });
-
-      try {
-        observer.observe(document.body, {
-          childList: true,
-          subtree: true,
-        });
-      } catch (e) {
-        console.warn("[doubao-image] failed to start keyword interceptor:", e && e.message);
-      }
-    }
-
-    /**
      * @param {object} ctx Cordis 上下文
      */
     function apply(ctx) {
       var t = ctx.locale.bind(NS);
-      // 缓存给 openStudioTab 用
-      studioT = t;
       ctx.effect(function () { return ctx.locale.register(NS, { zh: zh, en: en }); }, "dsh-doubao-image: dictionaries");
 
       // 命名空间只 bind 一次。
@@ -3294,17 +3265,6 @@ window.__ModuleLoader__.load({
        */
       var promotion = { enabled: false };
 
-      /**
-       * 「新建画布」命令的状态通道。
-       *
-       * `ctx.inject(["uiConversation"], ...)` 的 factory 可能还没跑，
-       * 所以这里用模块级闭包变量在 factory 跑过之后把实例塞进来。
-       */
-      var openStudio = { uiConversation: null };
-
-      // 启动关键词拦截（浏览器环境下）
-      startStudioKeywordInterceptor();
-
       ctx.slots.inject("plugins.bundle.config", function () {
         return ctx.slots.register({
           name: "plugins.bundle.config",
@@ -3332,8 +3292,6 @@ window.__ModuleLoader__.load({
           promotion.reason = "incompatible-uiConversation";
           return;
         }
-        // 让「新建画布」按钮能程序化切换 conversation.view。
-        openStudio.uiConversation = uiConversation;
         var ownerRegister = owner.slots.register.bind(owner.slots);
         owner.effect(function () {
           return uiConversation.events.register(createImageResultDefinition());
@@ -3486,6 +3444,7 @@ window.__ModuleLoader__.load({
       parseSize: parseSize,
       parsePositiveInt: parsePositiveInt,
       validateField: validateField,
+      selectOptionsFrom: selectOptionsFrom,
       settingsOpsApplied: settingsOpsApplied,
       readPathValue: readPathValue,
       commitSettingsOps: commitSettingsOps,
@@ -3494,6 +3453,12 @@ window.__ModuleLoader__.load({
       en: en,
       // 画廊持久层已内联进本文件，测试通过这里拿到它（浏览器里不需要）。
       gallery: gallery,
+      /*
+       * 设置页的画廊区块。导出只为一件事：它是「视频不显示」的落点，而那条
+       * 判据必须**真的渲染一次**才看得出来——`GalleryThumb` 的 `<img>` 对 mp4
+       * 只会出破图，纯函数断言抓不住（2026-10-25 用户截图即此症状）。
+       */
+      GallerySection: GallerySection,
       // 「画廊是否在记录」的开关与 setter，供自测直接驱动。
       galleryRecording: galleryRecording,
       applyGalleryRecording: applyGalleryRecording,
@@ -3501,19 +3466,6 @@ window.__ModuleLoader__.load({
       imageRefFromBlock: imageRefFromBlock,
       resultMetaFromBlock: resultMetaFromBlock,
       ResultCard: ResultCard,
-      // 关键词拦截与切换逻辑，供自测直接驱动。
-      openStudioTab: openStudioTab,
-      tryInterceptStudioKeyword: tryInterceptStudioKeyword,
-      STUDIO_KEYWORD_RE: STUDIO_KEYWORD_RE,
-      studioTriggeredSessions: studioTriggeredSessions,
-      get studioLastTriggerTime() { return studioLastTriggerTime; },
-      set studioLastTriggerTime(v) { studioLastTriggerTime = v; },
-      // 清空节流与去重状态。仅自测用：节流是模块级全局状态，
-      // 用例之间必须能隔离，否则前一个用例的节流会吞掉后一个用例的首次触发。
-      __resetStudioThrottleForTest: function () {
-        studioLastTriggerTime = 0;
-        studioTriggeredSessions.clear();
-      },
       // 设置页通道状态徽章那三件套。纯函数（buildProviderStatusList /
       // updatedAtText）要能脱离 DOM 直接断言文案与边界，组件也要能直接渲染。
       ProviderStatusBadge: ProviderStatusBadge,

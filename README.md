@@ -17,10 +17,10 @@
 |---|---|---|
 | 文生图 | ✅ 2048px 无水印原图 | ✅ 已实测出图 |
 | 图生图 | ✅ 参考图引导重生成 | ✅ 参考图上传 + multimodal 引用 |
-| 生视频 | ✅ 默认关闭（消耗付费额度） | ❌ |
+| 生视频 | ✅ 无水印 mp4（默认关闭，消耗每日免费额度） | ❌ |
 | 登录方式 | 扫码（纯 HTTP，无需浏览器） | 拉起 Edge 自动抓取 / 手工粘贴 Token |
 
-设置页提供：豆包扫码登录、Cookie 手工粘贴、GPT 拉起 Edge 登录、accessToken 粘贴、代理地址、超时与默认尺寸、视频开关、画廊开关。
+设置页提供：豆包扫码登录、Cookie 手工粘贴、GPT 拉起 Edge 登录、accessToken 粘贴、代理地址、超时与默认尺寸、视频开关（含「去掉视频水印」）、画廊开关。
 
 ### 对话页的「画廊」视图
 
@@ -63,7 +63,7 @@ dsh plugin --profile <profile> add github:LinLing4285/dsh-doubao-image-free
 
 - **`doubao_image`** — `{ prompt, size?, reference_images?, mode?, ratio?, duration? }`
   `mode` 取 `auto` / `generate` / `edit` / `video`；缺省时按有无参考图自动判断。
-- **`gpt_image`** — `{ prompt, reference_images? }`
+- **`gpt_image`** — `{ prompt }`（GPT 侧图生图走 `doubao_image` 的 `provider: "gpt"` + `reference_images`，该工具本身只接受提示词）
 
 > 工具名刻意**不叫** `generate_image`。DSH 的工具注册在同一层不允许重名，而 `dsh-image-gen` 已占用 `generate_image` / `edit_image`，同名会让后来的注册直接失败并拖垮插件加载。
 
@@ -80,7 +80,7 @@ dsh plugin --profile <profile> add github:LinLing4285/dsh-doubao-image-free
 
 ## 已知限制
 
-- **生视频**：豆包对视频烧服务端水印，**没有免水印通路**（与图片不同）。且消耗付费额度，故默认关闭。
+- **生视频**：与图片同源，走 `get_without_watermark` 换 `lr=unwatermarked` 的流（`body {vid:[vid]}`，注意视频要用 `vid` 而不是 `uri`）。取不到时回退到带水印文件并在结果里如实标注。设置页的「去掉视频水印」默认开；关掉则直接下带水印文件（部分平台要求标注 AI 生成来源时用）。消耗每日免费额度，故默认关闭。
 - **GPT 侧登录**：Chrome 136 起 `--remote-debugging-port` 对默认用户数据目录失效，所以拉起的是**独立 user-data-dir 的全新 Edge 窗口**，需要在新窗口里重新登录一次，无法复用日常浏览器的登录态。不想重登就用手工粘贴 Token（约 2 周一次）。
 - **豆包比例**：只有 1:1 / 4:3 / 16:9 / 9:16 四档，输出固定 2048px 长边，`size` 不精确控制像素。
 - **图生图语义**：豆包这条通路是「参考引导的重新生成」，**不保持原构图、背景与视角**；GPT 侧保留度更高但也不是像素级编辑。
