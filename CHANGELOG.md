@@ -1,5 +1,11 @@
 # 更新记录
 
+## 0.2.1 — 2026-10-27
+
+### 修复
+
+- **`gpt_image` 工具完全不可用**：`execute` 里返回了 `count`，但 `output.schema` 从未声明这个字段。宿主用 `additionalProperties: false` 校验整个返回值，多一个未声明字段就判整次调用失败，真实报错是 `tool "gpt_image" returned invalid output: "value.count" is not a declared property`。该缺陷从 0.2.0 之前的开发提交（2026-10-18）就存在，0.2.0 也带出去了 —— **0.2.0 的 GPT 生图通道实际一调用就报错**，升级到 0.2.1 修复。豆包的 `doubao_image` 不受影响。
+
 ## 0.2.0 — 2026-10-27
 
 同步开发仓库 `29661d6 → 6a07477` 的 17 个提交（3 个新功能、4 个修复，其余为文档）。

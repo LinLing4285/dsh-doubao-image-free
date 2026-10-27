@@ -2248,6 +2248,16 @@ export function apply(ctx, config) {
           /** 另存到工作区失败时的原因；失败不影响出图。 */
           saveError: { type: "string" },
           /**
+           * 本次生成的图片张数。
+           *
+           * 每个返回值字段都必须在 schema 里声明：宿主 `createSuccessResult`
+           * 用 `additionalProperties: false` 校验**整个返回值**，多一个未声明
+           * 字段就让整次调用失败（报 `"value.count" is not a declared
+           * property`）。GPT 通道一次只出一张，恒为 1，但 `execute` 里确实
+           * 返回了它——2026-10-18 加 `count: 1` 时漏了这里，工具实际不可用。
+           */
+          count: { type: "integer" },
+          /**
            * 会话清理失败时才出现。
            *
            * 2026-10-25 起 GPT 免费通道也「生完就删会话」（用户要求）。
