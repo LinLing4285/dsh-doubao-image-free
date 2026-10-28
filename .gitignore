@@ -19,3 +19,5 @@ cookie*.txt
 # 临时文件
 *.tmp
 *.bak
+# 本机 npm 凭据（token 绝不能进仓库）
+.npmrc
