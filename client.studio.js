@@ -5,7 +5,7 @@
  * `shared.ChunkMount` 内嵌，只导出 `Mount`。
  *
  * 布局对齐官方 `dsh-image-gen@0.8.5` 的 `.dsh-ig-workbench-grid`
- * （`C:\Users\1\.dsh\profiles\desktop\node_modules\dsh-image-gen\lib\client.js:123867`）：
+ * （`node_modules/dsh-image-gen/lib/client.js` 的 workbench 样式块）：
  *   `190px | minmax(360px,1fr) | 300px`（宽屏是 `minmax(190px,238px) | 1fr | minmax(286px,340px)`，
  *   窄到 1120px 才收敛成这三档固定值——本 chunk 直接用官方窄档数值），
  *   左「最近生成 / 收藏」、中「无限画布」、右「生成面板」。
@@ -31,7 +31,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: "dsh-doubao-image-free",
+  id: "dsh-doubao-image",
   chunk: "client.studio.js",
   factory: (require) => {
     var module = { exports: {} };
@@ -278,10 +278,10 @@ window.__ModuleLoader__.load({
         exportUnsupported: "当前画布不支持导出",
         exported: "已导出 PNG",
         instructionTitle: "生成指令（复制后发到对话里）",
-        instructionTemplate: "请用 dsh-doubao-image-free 的 {tool} 工具生成 {count} 张图片。\n提示词：{prompt}\n比例：{ratio}",
-        instructionEditTemplate: "请用 dsh-doubao-image-free 的 {tool} 工具，参考我从画廊选的图做图生图。\n提示词：{prompt}",
-        instructionGptTemplate: "请用 dsh-doubao-image-free 的 {tool} 工具生成一张图片。\n提示词：{prompt}",
-        instructionVideoTemplate: "请用 dsh-doubao-image-free 的 {tool} 工具生成 {duration} 秒的视频（参考图 {refs} 张，0 张即文生视频）。\n提示词：{prompt}",
+        instructionTemplate: "请用 dsh-doubao-image 的 {tool} 工具生成 {count} 张图片。\n提示词：{prompt}\n比例：{ratio}",
+        instructionEditTemplate: "请用 dsh-doubao-image 的 {tool} 工具，参考我从画廊选的图做图生图。\n提示词：{prompt}",
+        instructionGptTemplate: "请用 dsh-doubao-image 的 {tool} 工具生成一张图片。\n提示词：{prompt}",
+        instructionVideoTemplate: "请用 dsh-doubao-image 的 {tool} 工具生成 {duration} 秒的视频（参考图 {refs} 张，0 张即文生视频）。\n提示词：{prompt}",
         copy: "复制",
         copied: "已复制",
         copyFailed: "复制失败",
@@ -384,10 +384,10 @@ window.__ModuleLoader__.load({
         exportUnsupported: "This canvas cannot be exported",
         exported: "PNG exported",
         instructionTitle: "Generation request (copy it into the chat)",
-        instructionTemplate: "Generate {count} images with the dsh-doubao-image-free {tool} tool.\nPrompt: {prompt}\nAspect ratio: {ratio}",
-        instructionEditTemplate: "Use the dsh-doubao-image-free {tool} tool to edit the image I picked from the gallery.\nPrompt: {prompt}",
-        instructionGptTemplate: "Generate one image with the dsh-doubao-image-free {tool} tool.\nPrompt: {prompt}",
-        instructionVideoTemplate: "Generate a {duration}s video with the dsh-doubao-image-free {tool} tool ({refs} reference image(s); 0 means text-to-video).\nPrompt: {prompt}",
+        instructionTemplate: "Generate {count} images with the dsh-doubao-image {tool} tool.\nPrompt: {prompt}\nAspect ratio: {ratio}",
+        instructionEditTemplate: "Use the dsh-doubao-image {tool} tool to edit the image I picked from the gallery.\nPrompt: {prompt}",
+        instructionGptTemplate: "Generate one image with the dsh-doubao-image {tool} tool.\nPrompt: {prompt}",
+        instructionVideoTemplate: "Generate a {duration}s video with the dsh-doubao-image {tool} tool ({refs} reference image(s); 0 means text-to-video).\nPrompt: {prompt}",
         copy: "Copy",
         copied: "Copied",
         copyFailed: "Copy failed",

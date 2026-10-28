@@ -14,7 +14,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -162,6 +162,13 @@ function cookieOf(cookieHeader, name) {
 /** 扫码会话的有效期：与服务端二维码一致，超时后必须重新取码。 */
 /** 导入本地图的请求体上限。dataUrl 是 base64，比原图大 4/3，留足余量。 */
 const MAX_IMPORT_BODY_BYTES = 24 * 1024 * 1024;
+/**
+ * 参考图（`reference_images`，图生图 / 图生视频）的字节上限。
+ *
+ * 与 `MAX_IMPORT_BODY_BYTES`（24 MiB）同量级但略小：这些字节要**再上传一次**
+ * 到 ImageX，上限太大等于让一次工具调用把内存和上行带宽都占满。
+ */
+const MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024;
 /** Edge 登录的总超时（用户手动登录，给足时间）。 */
 const EDGE_LOGIN_TIMEOUT_MS = 300_000;
 /** 浏览器登录（含扫码/密码输入）给足时间，超时后自动关窗口。 */
@@ -317,17 +324,22 @@ function sameOrigin(req) {
 
   const origin = req.headers.origin;
   /*
-   * 第三道：缺 Origin 时，只接受「浏览器明确说这是同源/直接访问」的请求。
+   * 第三道：缺 Origin 时，只接受「浏览器明确说这是同源 / 直接访问」的请求。
    *
    * 旧实现缺 Origin 就放行，等于对所有跨站子资源请求敞开。现在要求
-   * sec-fetch-site 是 same-origin / same-site / none：
+   * sec-fetch-site 是 same-origin / none：
    *   - `same-origin`：同源页面发起的 fetch/XHR（正常路径）
-   *   - `same-site`：同一站点下的不同源（本插件场景里，web 服务与设置页
-   *     永远同源，出现 same-site 只可能来自 localhost 与 127.0.0.1 的写法差异，
-   *     两者都指向本机，放行）
    *   - `none`：用户在地址栏直接打开（顶层导航）
-   * 三个都没有（老浏览器 / 非浏览器客户端）时退回「Host 已经是 loopback」
-   * 这一条 —— 请求打不到外部主机，风险已被第一道压掉。
+   *
+   * **`same-site` 必须拒**，虽然它听起来更安全。`sec-fetch-site` 是按
+   * **site**（host，端口不参与）判定的，所以「本机另一个端口的网页」打过来
+   * 报的就是 `same-site` —— 实测确认：从 `http://127.0.0.1:19478` 的页面
+   * 用 `fetch(..., {mode:"no-cors"})` 与表单 POST 打 `127.0.0.1:19477`，
+   * 浏览器给的都是 `sec-fetch-site: same-site`（不是 cross-site）。
+   * 早期版本把 `same-site` 放进白名单，注释写「只可能来自 localhost 与
+   * 127.0.0.1 的写法差异」—— 那个推理是错的，它恰恰是「同主机跨端口」，
+   * 也就是本机任何网页都能打插件接口。插件自己的前端与宿主永远同源
+   * （相对路径 `/plugins/dsh-doubao-image/...`），用不到 same-site。
    */
   if (origin === undefined) {
     /*
@@ -335,15 +347,16 @@ function sameOrigin(req) {
      *
      * 注意不能写成 `site !== ""` 才查白名单：空串是「头存在但值为空」，
      * 与「头不存在」是两件事。前者是畸形请求（浏览器不会发），应当拒绝；
-     * 后者才是老浏览器/非浏览器客户端，靠 Host 白名单兜底。
+     * 后者是老浏览器/非浏览器客户端 —— 它们我们**也一律拒绝**，因为浏览器
+     * 之外的进程本来就不该拿这条路由（要 token 才能解决，见上）。
      * 早期版本写成 `site !== ""` 才查，导致空串直接 return true —— 变异
      * 测试用 `sec-fetch-site: ""` 把它抓了出来。
      */
     if (typeof site === "string") {
       const normalized = site.toLowerCase();
-      return normalized === "same-origin" || normalized === "same-site" || normalized === "none";
+      return normalized === "same-origin" || normalized === "none";
     }
-    return true;
+    return false;
   }
 
   return originMatchesHost(origin, host);
@@ -530,6 +543,94 @@ function extOfMime(mediaType) {
     case "image/gif": return ".gif";
     default: return ".png";
   }
+}
+
+/**
+ * 按文件头判图片 MIME（**不信扩展名**）。
+ *
+ * 为什么要它：`reference_images` 给的是本地路径，扩展名可以被随意写。
+ * 一个叫 `a.png` 的文本文件若被当成 PNG 上传，ImageX 会收下，豆包那边
+ * 才报错，错误信息还指不到我们这层。所以先把字节读出来自己看一眼。
+ *
+ * 为什么自己写而不复用 `lib` 的 `sniffMime`：那个函数在
+ * `lib/doubao-upstream.mjs` 里，且只认 JPEG / PNG / WebP 三种（它服务的是
+ * 下载回来的图）。这里要连 GIF 一起认，而且 `index.js` 与 `lib` 之间刻意
+ * 保持「只有入口函数」的依赖面——测试桩替换整条 import 时，多引一个名字
+ * 就多一个静默 undefined 的机会。
+ */
+function sniffImageMediaType(buf) {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
+  if (buf.length >= 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  if (buf.length >= 6) {
+    const head = buf.toString("ascii", 0, 6);
+    if (head === "GIF87a" || head === "GIF89a") return "image/gif";
+  }
+  return "";
+}
+
+/**
+ * 参考图允许被读取的范围：会话工作区根。
+ *
+ * 顺序与 `saveAllToWorkspace` 一致（`exec.agent.session.header.cwd`），
+ * 再补宿主也提供的 `exec.workspace.root`，都没有才退回进程 cwd。
+ * 退回 cwd 不是「放宽」而是「仍有边界」：测试用例的 cwd
+ * 就是仓库根；不带 `exec.agent` 的调用方（脚本、HTTP 路由）也都在这里。
+ */
+function referenceImageRoot(exec) {
+  const fromWorkspace = exec?.workspace?.root;
+  if (typeof fromWorkspace === "string" && fromWorkspace.trim() !== "") return fromWorkspace;
+  const fromSession = exec?.agent?.session?.header?.cwd;
+  if (typeof fromSession === "string" && fromSession.trim() !== "") return fromSession;
+  return process.cwd();
+}
+
+/**
+ * 读一张参考图，返回 `{ absolute, data, mediaType }`。
+ *
+ * 三道关，缺一不可：
+ * 1. **工作区边界**——`reference_images` 是模型给的字符串。不设边界的话
+ *    它能传 `C:\Users\<user>\.ssh\id_rsa`，内容会被 POST 到第三方存储。
+ * 2. **大小上限**——先 `stat` 再 `readFile`。反过来等于先把大文件读进内存
+ *    再拒绝，防不住 OOM。
+ * 3. **字节嗅探**——`mediaType` 由文件头决定，不由扩展名决定。
+ *
+ * 纯词法边界检查（`relative` + `..` 判据）与 `workspaceImageDir` 同款。
+ * 这里没有再 `realpath` 一次：这些是**读**不是写，读到的字节不会被写到
+ * 边界外的位置，逃逸目标（把数据带出去）由上面第 1 关和后端的白名单堵。
+ */
+async function readReferenceImage(file, exec) {
+  const raw = String(file ?? "").trim();
+  if (raw === "") throw new Error("参考图路径不能为空");
+  const root = resolve(referenceImageRoot(exec));
+  const absolute = isAbsolute(raw) ? resolve(raw) : resolve(root, raw);
+  const rel = relative(root, absolute);
+  const inside = rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  if (!inside) {
+    throw new Error(`参考图 ${absolute} 不在会话工作区（${root}）内：请先把图片放进工作区再引用`);
+  }
+  let info;
+  try {
+    info = await stat(absolute);
+  } catch (error) {
+    throw new Error(`读取参考图失败 ${absolute}：${errText(error)}`);
+  }
+  if (!info.isFile()) throw new Error(`参考图 ${absolute} 不是普通文件`);
+  if (info.size === 0) throw new Error(`参考图 ${absolute} 是空文件`);
+  if (info.size > MAX_REFERENCE_IMAGE_BYTES) {
+    throw new Error(`参考图 ${absolute} 有 ${info.size} 字节，超过上限 ${MAX_REFERENCE_IMAGE_BYTES} 字节（20 MiB）`);
+  }
+  let data;
+  try {
+    data = await readFile(absolute);
+  } catch (error) {
+    throw new Error(`读取参考图失败 ${absolute}：${errText(error)}`);
+  }
+  const mediaType = sniffImageMediaType(data);
+  if (!IMAGE_MEDIA_TYPES.has(mediaType)) {
+    throw new Error(`参考图 ${absolute} 不是受支持的图片格式（只认 PNG / JPEG / WebP / GIF）`);
+  }
+  return { absolute, data, mediaType };
 }
 
 /**
@@ -2101,14 +2202,13 @@ export function apply(ctx, config) {
          */
         const videoRefs = [];
         for (const file of referenceImages) {
-          const absolute = isAbsolute(file) ? file : join(process.cwd(), file);
-          let data;
-          try {
-            data = await readFile(absolute);
-          } catch (error) {
-            throw new Error(`读取参考图失败 ${absolute}：${errText(error)}`);
-          }
-          videoRefs.push({ data, mediaType: mediaTypeOfFile(absolute), ext: extname(absolute).toLowerCase() || ".png" });
+          /*
+           * 读取前先过 `readReferenceImage`：工作区边界 + 20 MiB 上限 +
+           * 按文件头嗅探 MIME。这里**不能再退回 `mediaTypeOfFile`**——
+           * 扩展名是调用方可控的，`foo.png` 里可以是任意字节。
+           */
+          const ref = await readReferenceImage(file, exec);
+          videoRefs.push({ data: ref.data, mediaType: ref.mediaType, ext: extOfMime(ref.mediaType) });
         }
         const generated = await runVideoGeneration({
           prompt,
@@ -2132,14 +2232,9 @@ export function apply(ctx, config) {
         if (referenceImages.length === 0) throw new Error("mode=edit 需要给出 reference_images（本地图片路径）");
         const images = [];
         for (const file of referenceImages) {
-          const absolute = isAbsolute(file) ? file : join(process.cwd(), file);
-          let data;
-          try {
-            data = await readFile(absolute);
-          } catch (error) {
-            throw new Error(`读取参考图失败 ${absolute}：${errText(error)}`);
-          }
-          images.push({ data, mediaType: mediaTypeOfFile(absolute) });
+          // 与视频分支同一道关：边界 / 大小 / 字节嗅探，理由见 readReferenceImage。
+          const ref = await readReferenceImage(file, exec);
+          images.push({ data: ref.data, mediaType: ref.mediaType });
         }
         const callEdit = (cookieHeader, identity = {}, options = {}) => doubaoEditImage({
           cookieHeader,
@@ -3404,4 +3499,4 @@ export function apply(ctx, config) {
   }, "gallery route");
 }
 
-export const __internals = { BASE, sameOrigin, allowsStateChange, isLoopbackHost, originMatchesHost, sniffPngOrJpeg, mediaTypeOfFile, findEdgeExecutable, describeVideoWatermark, pluginDir: fileURLToPath(new URL(".", import.meta.url)) };
+export const __internals = { BASE, sameOrigin, allowsStateChange, isLoopbackHost, originMatchesHost, sniffPngOrJpeg, sniffImageMediaType, mediaTypeOfFile, referenceImageRoot, readReferenceImage, MAX_REFERENCE_IMAGE_BYTES, findEdgeExecutable, describeVideoWatermark, pluginDir: fileURLToPath(new URL(".", import.meta.url)) };

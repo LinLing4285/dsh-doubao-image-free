@@ -1,5 +1,26 @@
 # 更新记录
 
+## 0.2.2 — 2026-10-28
+
+同步开发仓库 `3a3a901 → 3d54fe7`。这一版全部是**安全加固**，没有新功能。
+
+### 安全
+
+- **账号 id 就是 `sessionid` 明文**：账号池里每个账号的 `id` 直接取自 cookie 里的 `sessionid`（32 位 hex），并随 `/api/status`、`doubao.accounts` 路由和工具返回值一路返回给界面与模型。任何能看到这些输出的人（截图、会话历史、日志）等于拿到了完整登录凭据。
+  现在 `id` 是 `acc_` + `sha256(sessionid)` 前 16 位：不可逆、天然是去重键，登录态变化时仍是同一个 id（不会重复计入同一份额度）。存量记录在下次读取时自动重写，无需手工迁移。
+- **SSE 错误详情未脱敏**：豆包 gateway 错误原文（可能含 cookie 片段）被拼进 `Error.message`、`err.gatewayDetail`、`err.replyText`、`err.failures` 四处，会冒到工具返回值与会话历史。四处现在统一走 `safeSnippet`；`gatewayError` 本体保持原文，因为内部鉴权失败判据仍要读它。
+- **视频通道所有用户共享同一套设备身份**：`videoSecurityParams` 把 `device_id` / `web_id` / `tea_uuid` / `fp` 写死成常量，调用方传进来的账号 `device` 被静默丢弃。现在这四个字段优先取账号真实设备身份，为空则回落协议常量（真实账号的 `deviceId` / `teaUuid` 本来就是空串，直接取会发出空值）。`pc_version` / `channel` 等**仍保持常量**——它们是端点协议的一部分（桌面构建标识），不是账号身份。
+- **参考图可读任意本机文件并上传到第三方存储**：`reference_images` 是模型给的字符串，旧实现 `isAbsolute(file) ? file : join(process.cwd(), file)` 后直接 `readFile` 上传 ImageX。模型传 `~/.ssh/id_rsa` 就等于把私钥 POST 给字节跳动。现在三道关：**工作区边界**（`relative` + `..` 判据，越界报错并提示先把图放进工作区）、**20 MiB 上限**（先 `stat` 再 `readFile`，防止先读进内存再拒绝）、**字节嗅探**（`mediaType` 由文件头决定，不信扩展名）。
+- **本机任意网页都能调插件接口（CSRF）**：路由的同源校验在白名单里放了 `same-site`，注释写「只可能来自 localhost 与 127.0.0.1 的写法差异」。实测（真实 Chromium + 双端口探针）证明这是错的：`sec-fetch-site` 按 **host** 判定、**端口不参与**，所以从 `127.0.0.1:任意端口` 的网页打过来报的是 `same-site` 而非 `cross-site` —— 白名单等于给本机所有网页开了门（`fetch` 只读接口能直接拿走画廊与灵感库全文）。现在白名单只收 `same-origin` 与 `none`，缺头一律拒。
+
+  **这一条挡不住什么**：本机任意进程（curl / PowerShell / 脚本）可以伪造 `sec-fetch-site: same-origin`，要彻底收口需要 token 级鉴权。本次只关掉浏览器侧的 CSRF 面。
+
+### 验证
+
+- 全量自测 **1984 项通过 / 0 失败**，变异测试 **62/62 全部捕获**（0 逃逸、0 锚点失效）。
+- 回环鉴权真机复验：无凭据访问 `/api/status`、`/api/gallery`、`/api/inspiration` 全部 **403**（修复前分别是 200 / 9.6 KB / 1.7 MB）；`same-site` / `cross-site` / 空串 / 非回环 Host 全部 403；`none` 200。
+- 用 CDP 监听真实 GUI 页面确认前端请求全部是 `same-origin`（`fetch` 的 cors 与 no-cors 形态、`XHR`、`<img>` 四种都测了），页面功能不受影响。
+
 ## 0.2.1 — 2026-10-27
 
 ### 修复

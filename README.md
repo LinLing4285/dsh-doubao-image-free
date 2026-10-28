@@ -85,6 +85,7 @@ dsh plugin --profile <profile> add github:LinLing4285/dsh-doubao-image-free
 - **豆包比例**：只有 1:1 / 4:3 / 16:9 / 9:16 四档，输出固定 2048px 长边，`size` 不精确控制像素。
 - **图生图语义**：豆包这条通路是「参考引导的重新生成」，**不保持原构图、背景与视角**；GPT 侧保留度更高但也不是像素级编辑。
 - **依赖私有接口**：平台改版即失效。
+- **本机同源校验不是鉴权**：所有 HTTP 路由都校验 `Host` 必须是回环、`sec-fetch-site` 只接受 `same-origin` / `none`，这挡的是**浏览器侧 CSRF**（任意网页偷偷调你的插件接口）。但本机任意进程（curl、PowerShell、脚本）可以伪造 `sec-fetch-site: same-origin` 直接打到接口，要彻底收口需要 token 级鉴权。**机器上有不受信任的进程时，别把它当保护。**
 
 ## 未验证项（如实记录）
 
