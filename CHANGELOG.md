@@ -1,5 +1,23 @@
 # 更新记录
 
+## 0.2.3 — 2026-10-28
+
+同步开发仓库 `439b42f → 83dc4ca`。修复桌面端（Electron）下画廊缩略图 / 灵感库 / 工作台全部 403 不可用的问题。
+
+### 修复
+
+- **桌面端全部请求 403（画廊图挂、灵感库加载失败、工作台打不开）**：Electron 的 `protocol.handle` 把 `dsh-app://app` 页面的请求转发到本地 HTTP 服务时（`app.asar` `main.js` 的 `forwardWebRequest`），**明确删除 `host` / `origin` / `cookie` / `sec-fetch-site` 四个头**，只注入宿主签发的 auth cookie。旧实现要求「缺 Origin 时 `sec-fetch-site` 必须是 `same-origin`/`none`」，两个头都被删掉的请求一律判 403 —— 桌面端因此全军覆没（浏览器端不受影响，浏览器会正常带这两个头）。
+  现在新增**桌面协议桥兼容分支**：只在 Origin 与 `sec-fetch-site` **都缺失**时，调用宿主自己的认证入口 `ctx.connection.requestRejection(req)`（签名 Cookie + live Peer 校验，`HttpOnly` + `SameSite=Strict` + HMAC + 过期）判定放行与否。桌面桥转发的请求带着宿主注入的 cookie 能过；curl / 跨站脚本拿不到这个 cookie，过不了。**其余判据一字未放宽**——带 Origin、带 `sec-fetch-site` 的请求照旧严格同源比对，`same-site` / `cross-site` / Origin 不匹配仍然拒绝。
+- **工作台标签页「加载失败：client.studio.js」**：chunk 注册 id 还是开发期的旧包名 `dsh-doubao-image`，宿主按包名 `dsh-doubao-image-free` 去 `importChunk` 找不到对应注册，整个工作台 chunk 加载失败。画廊 / 灵感库两个 chunk 的注册 id 本来就是对的，所以只有工作台受影响。
+- **`Origin: null` 显式拒**：它来自沙箱 iframe / `file://` 页面 / 跨源重定向，不是可核验的同源证据。
+- **`origin-rejected` 拒绝点加诊断日志**：写入 `~/.dsh/logs/dsh-doubao-image-api.log`（method / url / host / origin / site / UA），下次再有来源校验问题可直接看真实请求头，不用靠猜。
+
+### 验证
+
+- 全量自测 **1985 项通过 / 0 失败**，变异测试 **62/62 全部捕获**（0 逃逸、0 锚点失效）。
+- 真机复验：桌面端画廊缩略图、灵感库、工作台全部恢复正常（用户确认「这回可以了」）。
+- 安全边界反向验证：无 connection service / 宿主认证 401·403 / `requestRejection` 抛错 / 非回环 Host / 带 `cross-site` / 空串 site —— 六类全部拒绝（fail-closed）。
+
 ## 0.2.2 — 2026-10-28
 
 同步开发仓库 `3a3a901 → 3d54fe7`。这一版全部是**安全加固**，没有新功能。

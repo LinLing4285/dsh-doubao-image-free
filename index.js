@@ -13,7 +13,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
@@ -289,9 +289,18 @@ function isLoopbackHost(host) {
  * **大小写必须归一**：`new URL("http://LOCALHOST:19387").host` 返回
  * `"localhost:19387"`（URL 解析器会小写化主机名），而 `req.headers.host`
  * 保留客户端发来的原样大小写。不归一就会出现「合法请求被判成跨站」。
+ *
+ * **桌面协议桥兼容（2026-10-28 真实事故，app.asar main.js forwardWebRequest）**：
+ * Electron `protocol.handle` 把 `dsh-app://app` 的请求转发到本地 HTTP 服务时，
+ * **明确删除 host/origin/cookie/sec-fetch-site 四个头**，只注入宿主签发的
+ * auth cookie。所以桌面端转发过来的请求必然 `Origin=undefined` 且
+ * `Sec-Fetch-Site=undefined`，本函数走不到（它要求 Origin 存在）。这条兼容
+ * 分支在 `sameOrigin()` 里（缺 Origin 且缺 site 时调 `ctx.connection
+ * .requestRejection(req)`），不放宽这里——Origin 存在时仍是严格同源比对。
  */
 function originMatchesHost(origin, host) {
   if (typeof origin !== "string" || origin === "") return false;
+  if (origin.trim().toLowerCase() === "null") return false;
   let parsed;
   try {
     parsed = new URL(origin);
@@ -303,7 +312,27 @@ function originMatchesHost(origin, host) {
   return parsed.host.toLowerCase() === host.trim().toLowerCase();
 }
 
-function sameOrigin(req) {
+/**
+ * 桌面协议桥兼容分支：用宿主 Connection 的认证入口判这条请求能否放行。
+ *
+ * 判据是**宿主认证**，不是插件自己发明的标记。`requestRejection` 的签名
+ * 是 `ConnectionTrustRequest { headers }`（不需要 url），返回
+ * `401 | 403 | undefined`——undefined 表示「这条请求可以接受」（签名 Cookie
+ * 通过 + live Peer 在场 + Host/Origin 围栏通过）。
+ *
+ * 任何异常 / service 缺失 / 非 undefined 返回一律拒（fail-closed）。
+ */
+function hostAdmissionAllows(req, ctx) {
+  const connection = ctx?.get?.("connection");
+  if (connection === undefined || typeof connection.requestRejection !== "function") return false;
+  try {
+    return connection.requestRejection(req) === undefined;
+  } catch {
+    return false;
+  }
+}
+
+function sameOrigin(req, ctx) {
   const host = req.headers.host;
   /*
    * 第一道：Host 必须是本机回环。
@@ -356,7 +385,17 @@ function sameOrigin(req) {
       const normalized = site.toLowerCase();
       return normalized === "same-origin" || normalized === "none";
     }
-    return false;
+    /*
+     * Origin 与 Sec-Fetch-Site **都**缺失：桌面协议桥（app.asar main.js
+     * forwardWebRequest）明确删除 host/origin/cookie/sec-fetch-site 四头后
+     * 注入宿主签发的 auth cookie 转发，必然走到这里。区分桌面桥与 curl
+     * / 跨站脚本的唯一可靠凭据是宿主自己的认证结果：
+     * `ctx.connection.requestRejection(req)`（Host/Origin 围栏 + 签名
+     * Cookie + live Peer 校验，dsh-client-connection lib/index.js:737-749）。
+     * 返回 undefined（无拒绝）才放行；401/403、service 缺失、抛错一律拒。
+     * 这条分支只在两个头都缺失时走到，其余判据不动。
+     */
+    return hostAdmissionAllows(req, ctx);
   }
 
   return originMatchesHost(origin, host);
@@ -370,8 +409,8 @@ function sameOrigin(req) {
  * 演进的——把状态变更的判据单独写出来，将来放宽 sameOrigin（例如为了
  * 支持某种新的同源形态）时，不会连带放宽写操作。
  */
-function allowsStateChange(req) {
-  if (!sameOrigin(req)) return false;
+function allowsStateChange(req, ctx) {
+  if (!sameOrigin(req, ctx)) return false;
   const site = req.headers["sec-fetch-site"];
   if (typeof site === "string" && site.toLowerCase() === "cross-site") return false;
   return true;
@@ -2469,8 +2508,15 @@ export function apply(ctx, config) {
   const route = (path, handler, label) => {
     const wrapped = async (req, res) => {
       const readOnly = req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS";
-      const allowed = readOnly ? sameOrigin(req) : allowsStateChange(req);
-      if (!allowed) return sendJson(res, 403, { ok: false, reason: "origin-rejected" });
+      const allowed = readOnly ? sameOrigin(req, ctx) : allowsStateChange(req, ctx);
+      if (!allowed) { {
+        // 2026-10-28 画廊 403 诊断：ctx.logger 在 GUI 进程无落点，改直接追加文件。
+        const DBI_DIAG_LOG = join(homedir(), ".dsh", "logs", "dsh-doubao-image-api.log");
+        try {
+          mkdirSync(join(homedir(), ".dsh", "logs"), { recursive: true });
+          appendFileSync(DBI_DIAG_LOG, `[${new Date().toISOString()}] origin-rejected: ${req.method} ${req.url} host=${req.headers.host} origin=${JSON.stringify(req.headers.origin)} site=${JSON.stringify(req.headers["sec-fetch-site"])} UA=${JSON.stringify(req.headers["user-agent"])}\n`);
+        } catch {}
+      } return sendJson(res, 403, { ok: false, reason: "origin-rejected" }); }
 
       try {
         await handler(req, res);
