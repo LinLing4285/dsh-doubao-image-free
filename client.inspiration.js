@@ -45,6 +45,15 @@ window.__ModuleLoader__.load({
     var LOAD_MORE_JUMP_SLACK = 60;
     /** 卡片右上角星标在 `favorites` 集合里的键前缀（见 `favoriteKey`）。 */
     var FAVORITES_STORAGE_KEY = "dsh-dbi-inspiration-favorites";
+    /**
+     * 中英阅读语言的持久化键（新增）。
+     *
+     * 与收藏分开存：一是语义不同，二是将来若想「清收藏但保留语言偏好」
+     * 不必去解析同一份 JSON。
+     */
+    var PROMPT_LANG_STORAGE_KEY = "dsh-dbi-inspiration-prompt-lang";
+    /** 「对照」开关的持久化键，同上。 */
+    var DUAL_STORAGE_KEY = "dsh-dbi-inspiration-dual";
 
     /** 本 chunk 自带字典（不依赖主 bundle 的 t）。 */
     var COPY = {
@@ -52,7 +61,7 @@ window.__ModuleLoader__.load({
         kicker: "提示词灵感",
         title: "灵感库",
         subtitle: "浏览公开案例，把喜欢的 Prompt 带回工作台。",
-        search: "搜索标题、Prompt…",
+        search: "搜索标题、Prompt（中英都能搜）",
         allCategories: "全部分类",
         allStyles: "全部风格",
         allScenes: "全部场景",
@@ -90,12 +99,34 @@ window.__ModuleLoader__.load({
         cacheClearFailed: "清理缓存失败。",
         imageLoading: "图片加载中…",
         imageFailed: "图片暂时无法读取",
+        /*
+         * 中英切换（新增）。
+         *
+         * 这里刻意区分两套文案：
+         * - `langZhShort` / `langEnShort` 是分段控件上的两个字符，要极短；
+         * - `langTitle` 是长说明，给 title 属性和无障碍标签用。
+         */
+        langZhShort: "中",
+        langEnShort: "EN",
+        langTitle: "切换中文译文 / 英文原文（生图与复制始终使用英文原文）",
+        langZh: "中文译文",
+        langEn: "英文原文",
+        noZh: "这一条还没有中文译文",
+        zhCount: "已有 {count}/{total} 条中文译文",
+        dual: "对照",
+        dualTitle: "同时显示中文译文与英文原文",
+        promptCopyHint: "复制的是英文原文",
+        /* 卡片右上角的放大查看与全屏查看器（新增）。 */
+        zoomOpen: "放大查看",
+        zoomPrev: "上一张",
+        zoomNext: "下一张",
+        zoomLoading: "大图加载中…",
       },
       en: {
         kicker: "Prompt inspiration",
         title: "Inspiration",
         subtitle: "Browse public examples and bring a prompt back to Studio.",
-        search: "Search titles and prompts…",
+        search: "Search titles and prompts (Chinese or English)",
         allCategories: "All categories",
         allStyles: "All styles",
         allScenes: "All scenes",
@@ -133,6 +164,21 @@ window.__ModuleLoader__.load({
         cacheClearFailed: "Failed to clear the cache.",
         imageLoading: "Loading image…",
         imageFailed: "Image is temporarily unavailable",
+        langZhShort: "中",
+        langEnShort: "EN",
+        langTitle: "Switch between Chinese translation and the English original (generation and copy always use English)",
+        langZh: "Chinese",
+        langEn: "English",
+        noZh: "No Chinese translation for this example yet",
+        zhCount: "{count}/{total} examples translated",
+        dual: "Side by side",
+        dualTitle: "Show the Chinese translation and the English original at the same time",
+        promptCopyHint: "Copies the English original",
+        /* Zoom-in-view button on cards plus the full-screen viewer (new in this fork). */
+        zoomOpen: "Zoom in view",
+        zoomPrev: "Previous",
+        zoomNext: "Next",
+        zoomLoading: "Loading full-size image…",
       },
     };
 
@@ -190,12 +236,52 @@ window.__ModuleLoader__.load({
           if (!Array.isArray(item.scenes) || item.scenes.indexOf(f.scene) < 0) return false;
         }
         if (query === "") return true;
-        var fields = [item.title, item.prompt, item.promptPreview];
+        /*
+         * 搜索**始终是双语的**：加了中文译文之后，把 `promptZh` / `promptPreviewZh`
+         * 也纳入命中范围。这不跟随界面语言开关——用中文关键词找一条英文提示词，
+         * 和用英文关键词找它，都该命中同一个结果。否则「切到英文就搜不到中文」
+         * 会让这个开关变成搜索的隐形过滤器。
+         */
+        var fields = [item.title, item.prompt, item.promptPreview, item.promptZh, item.promptPreviewZh];
         for (var i = 0; i < fields.length; i += 1) {
           if (typeof fields[i] === "string" && fields[i].toLowerCase().indexOf(query) >= 0) return true;
         }
         return false;
       });
+    }
+
+    /**
+     * 新增：取一条案例在指定语言下的完整 Prompt。
+     *
+     * `lang === "zh"` 但这一条没有译文时**回退英文原文**，不返回空串——
+     * 数据集随时可能比译文新，回退比显示空白有用得多。
+     */
+    function pickPrompt(item, lang) {
+      if (item === null || typeof item !== "object") return "";
+      if (lang === "zh") {
+        if (typeof item.promptZh === "string" && item.promptZh !== "") return item.promptZh;
+      }
+      return item.prompt !== undefined ? String(item.prompt) : "";
+    }
+
+    /**
+     * 新增：当前语言显示的那段文字**是不是译文**。
+     *
+     * 用于浮标标注「中文译文」/「英文原文」，以及缺译文时给一行提示。
+     */
+    function isTranslated(item) {
+      return item !== null && typeof item === "object"
+        && typeof item.promptZh === "string" && item.promptZh !== "";
+    }
+
+    /** 新增：统计一批案例里有多少条带中文译文（给页头进度用）。 */
+    function countTranslated(cases) {
+      var list = Array.isArray(cases) ? cases : [];
+      var n = 0;
+      for (var i = 0; i < list.length; i += 1) {
+        if (isTranslated(list[i])) n += 1;
+      }
+      return n;
     }
 
     /** 分页切片：limit 非正数 → 空数组（不是「全部」）。 */
@@ -320,6 +406,73 @@ window.__ModuleLoader__.load({
       return index + LOAD_MORE_JUMP_SLACK;
     }
 
+    /**
+     * 锚点跳转：把 limit 推到「至少包含该案例，且它下面还留一屏内容」。
+     *
+     * 为什么不像分类那样只推到 `index + 1`：滚动位置的极值受
+     * `scrollHeight - clientHeight` 限制，如果锚点正好是最后一张卡，它就只能
+     * 停在视口底部而不是顶部，位置会差一屏。多留一页出去才能「真的停在原位」。
+     *
+     * 返回 0 表示「这个案例不在当前结果里」——调用方应放弃跳转，不要重试。
+     * 返回值恒 ≥ 传入的 limit（除了 0 这个哨兵），因此不会把窗口缩小。
+     */
+    function limitToRevealCase(matching, caseId, limit) {
+      var list = Array.isArray(matching) ? matching : [];
+      var n = typeof limit === "number" && isFinite(limit) ? Math.floor(limit) : 0;
+      if (n <= 0) n = DEFAULT_VISIBLE_LIMIT;
+      if (typeof caseId !== "string" || caseId === "") return n;
+      var index = -1;
+      for (var i = 0; i < list.length; i += 1) {
+        var item = list[i];
+        if (item !== null && typeof item === "object" && String(item.id) === caseId) {
+          index = i;
+          break;
+        }
+      }
+      if (index < 0) return 0;
+      if (index < n) return n;
+      return Math.min(list.length, index + 1 + LOAD_MORE_STEP);
+    }
+
+    /**
+     * 视口顶部那张卡的案例 id（找不到返回空串）。
+     *
+     * DOM 顺序即视觉顺序，所以对 `[data-case-id]` 做**二分**而不是线性扫：
+     * 541 张卡上线性扫每帧要读几百次 `getBoundingClientRect`，二分十来次就够。
+     */
+    function topVisibleCaseId(root) {
+      if (root === null || root === undefined || typeof root.querySelectorAll !== "function") return "";
+      var nodes;
+      try {
+        nodes = root.querySelectorAll("[data-case-id]");
+      } catch (error) {
+        return "";
+      }
+      if (nodes === null || nodes === undefined || nodes.length === 0) return "";
+      var rootTop = typeof root.getBoundingClientRect === "function" ? root.getBoundingClientRect().top : 0;
+      var lo = 0;
+      var hi = nodes.length - 1;
+      var found = -1;
+      while (lo <= hi) {
+        var mid = (lo + hi) >> 1;
+        var rect = nodes[mid].getBoundingClientRect();
+        if (rect.bottom > rootTop + 1) {
+          found = mid;
+          hi = mid - 1;
+        } else {
+          lo = mid + 1;
+        }
+      }
+      if (found < 0) return "";
+      var id = nodes[found].getAttribute("data-case-id");
+      return typeof id === "string" ? id : "";
+    }
+
+    /** 转义成能放进 `[data-case-id="…"]` 里的属性值（id 目前都是数字，稳妥起见还是过一遍）。 */
+    function escapeAnchorId(value) {
+      return String(value === null || value === undefined ? "" : value).replace(/["\\\]]/g, "");
+    }
+
     /* ────────────────────────── C6 收藏 ────────────────────────── */
 
     /**
@@ -426,11 +579,131 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 读阅读语言偏好。**没存过偏好时返回空串**，含义是「跟随界面语言」
+     * （见 `resolvePromptLang`）——中文界面读中文、英文界面读英文。
+     * 不硬编码任何一种，否则英文界面一进来看到的是中文提示词。
+     */
+    function readPromptLang(storage) {
+      try {
+        var store = storage !== undefined ? storage : (typeof localStorage !== "undefined" ? localStorage : null);
+        if (store === null || store === undefined || typeof store.getItem !== "function") return "";
+        var raw = store.getItem(PROMPT_LANG_STORAGE_KEY);
+        return raw === "en" || raw === "zh" ? raw : "";
+      } catch {
+        return "";
+      }
+    }
+
+    /** 把「用户存过的偏好」与「当前界面语言」合成实际生效的阅读语言。 */
+    function resolvePromptLang(stored, uiLang) {
+      if (stored === "zh" || stored === "en") return stored;
+      return uiLang === "zh" ? "zh" : "en";
+    }
+
+    function writePromptLang(lang, storage) {
+      try {
+        var store = storage !== undefined ? storage : (typeof localStorage !== "undefined" ? localStorage : null);
+        if (store === null || store === undefined || typeof store.setItem !== "function") return false;
+        store.setItem(PROMPT_LANG_STORAGE_KEY, lang === "en" ? "en" : "zh");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    /** 读「对照」开关偏好，默认关——单框是常态，对照是临时动作。 */
+    function readDual(storage) {
+      try {
+        var store = storage !== undefined ? storage : (typeof localStorage !== "undefined" ? localStorage : null);
+        if (store === null || store === undefined || typeof store.getItem !== "function") return false;
+        return store.getItem(DUAL_STORAGE_KEY) === "1";
+      } catch {
+        return false;
+      }
+    }
+
+    function writeDual(on, storage) {
+      try {
+        var store = storage !== undefined ? storage : (typeof localStorage !== "undefined" ? localStorage : null);
+        if (store === null || store === undefined || typeof store.setItem !== "function") return false;
+        store.setItem(DUAL_STORAGE_KEY, on === true ? "1" : "0");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * 分类 / 风格 / 场景的**显示名**中文映射（新增）。
+     *
+     * 关键约定：**只映射显示名，不改数据值**。`item.category` 依旧是
+     * "Posters & Typography"，`<option value>` 也依旧是英文——筛选、分组、
+     * 收藏键全部按英文值走，中文只出现在用户眼前。若把值也换成中文，
+     * 数据集一升级（英文键变了）所有本地收藏与筛选状态全断。
+     *
+     * 漏译的词条直接回落英文原文，不显示空。
+     */
+    var TAG_ZH = {
+      // 13 个分类（数据集声明的全量）
+      "Architecture & Spaces": "建筑与空间",
+      "Brand & Logos": "品牌与标志",
+      "Characters & People": "角色与人物",
+      "Charts & Infographics": "图表与信息图",
+      "Documents & Publishing": "文档与出版",
+      "History & Classical Themes": "历史与古典题材",
+      "Illustration & Art": "插画与艺术",
+      "Other Use Cases": "其他用途",
+      "Photography & Realism": "摄影与写实",
+      "Posters & Typography": "海报与字体排印",
+      "Products & E-commerce": "产品与电商",
+      "Scenes & Storytelling": "场景与叙事",
+      "UI & Interfaces": "界面与交互",
+      // 19 个风格标签
+      "3D": "3D",
+      "Architecture": "建筑",
+      "Brand": "品牌",
+      "Character": "角色",
+      "Characters": "角色（复数）",
+      "Charts": "图表",
+      "Classical": "古典",
+      "Documents": "文档",
+      "History": "历史",
+      "Illustration": "插画",
+      "Infographic": "信息图",
+      "Photography": "摄影",
+      "Poster": "海报",
+      "Product": "产品",
+      "Products": "产品（复数）",
+      "Realistic": "写实",
+      "Scenes": "场景",
+      "UI": "界面",
+      // 10 个场景标签
+      "Commerce": "商业",
+      "Creative": "创意",
+      "Education": "教育",
+      "Fashion": "时尚",
+      "Food": "美食",
+      "Social": "社交",
+      "Story": "故事",
+      "Tech": "科技",
+      "Travel": "旅行",
+    };
+
+    /**
+     * 取标签显示名。`lang !== "zh"` 或没有映射时原样返回——
+     * 显示层永远不该因为「没翻译」而变成空白。
+     */
+    function tagLabel(name, lang) {
+      var raw = name === null || name === undefined ? "" : String(name);
+      if (lang !== "zh") return raw;
+      return TAG_ZH[raw] !== undefined ? TAG_ZH[raw] : raw;
+    }
+
+    /**
      * 复制文本。**永不 reject**：剪贴板在非安全上下文、无权限、或宿主
      * 未实现 `navigator.clipboard` 时都只是返回 false，调用方据此显示
      * 「复制失败」，不会产生未捕获的 Promise 异常。
-     */
-    function copyPromptText(text) {
+     */    function copyPromptText(text) {
       try {
         if (typeof navigator === "undefined" || !navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
           return Promise.resolve(false);
@@ -472,8 +745,25 @@ window.__ModuleLoader__.load({
      * 让 Host 侧重新 `loadCatalog()`（见 `index.js` 的 `ROUTE_INSPIRATION`），
      * 所以「再 GET 一次」就是刷新，不需要客户端造第二条路由名。
      */
+    /**
+     * 目录缓存：挂在模块作用域，不是组件 state。
+     *
+     * 灵感库每次切回来都会重新挂载，而这份目录有 ~1.9 MB / 976 条案例，
+     * 重新 fetch + JSON.parse + 三级分组是一笔看得见的开销。模块作用域在
+     * chunk 卸载后仍然活着（chunk 模块只求值一次），所以切来切去只拉一次。
+     *
+     * 只缓存**成功**的结果，失败不写——否则一次网络抖动会被记一辈子。
+     * 「刷新」按钮走 `retry()`，`retryToken > 0` 时强制重新拉。
+     */
+    var catalogCache = { route: "", payload: null };
+
     function useCatalog(route) {
-      var pair = react.useState({ status: "loading", catalog: null });
+      var pair = react.useState(function () {
+        if (catalogCache.route === route && catalogCache.payload !== null) {
+          return { status: "ready", catalog: catalogCache.payload };
+        }
+        return { status: "loading", catalog: null };
+      });
       var state = pair[0];
       var setState = pair[1];
       var retryPair = react.useState(0);
@@ -482,6 +772,11 @@ window.__ModuleLoader__.load({
 
       react.useEffect(function () {
         var alive = true;
+        // 有缓存、又不是「用户按了刷新 / 上次失败后重试」→ 直接用，不再拉一次。
+        if (retryToken === 0 && catalogCache.route === route && catalogCache.payload !== null) {
+          setState({ status: "ready", catalog: catalogCache.payload });
+          return function () { alive = false; };
+        }
         setState({ status: "loading", catalog: null });
         fetch(route, {
           method: "GET",
@@ -498,6 +793,8 @@ window.__ModuleLoader__.load({
             throw new Error("bad-payload");
           }
           if (!Array.isArray(payload.sources)) throw new Error("bad-payload");
+          catalogCache.route = route;
+          catalogCache.payload = payload;
           setState({ status: "ready", catalog: payload });
         }).catch(function () {
           if (!alive) return;
@@ -627,6 +924,87 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 全屏放大查看器（新增）。
+     *
+     * 存在的理由：灵感库卡片最宽也就 220px，案例里的字体、构图、材质根本看不清。
+     *
+     * 做法刻意跟图库的灯箱对齐（同一个深色遮罩 `rgba(0,0,0,.72)`、同一套
+     * `max-height:calc(100% - 72px)` + `object-fit:contain` 的大图），这样
+     * 「点开看大图」在两处手感一致。区别只有一条：
+     *
+     * **不带图库灯箱底部那条工具栏**（下载 / 复制图片 / 重新生成 / 关闭）。
+     * 这里是纯看图入口，要操作回卡片进检查器。所以关闭改到右上角一个 ×，
+     * 另外保留「点遮罩」「Esc」两条退路。
+     *
+     * 也不做缩放和平移：这批案例图的用途是「看清排版和画法」，不是抠像素；
+     * 复杂度（滚轮 passive、指针捕获、变换矩阵）换来的收益不成比例。
+     */
+    function InspirationZoom(props) {
+      var t = props.t;
+      var item = props.item;
+      var state = useInspirationImage(props.sourceId, item.image, true);
+
+      /*
+       * 键盘。依赖数组里放回调而不是空数组——这几个回调随当前索引变化
+       * （闭包捕获 item），锁死空数组会让「切到下一张后再按 →」还用旧索引。
+       */
+      react.useEffect(function () {
+        function onKey(event) {
+          if (event.key === "Escape") props.onClose();
+          else if (event.key === "ArrowLeft") props.onPrev();
+          else if (event.key === "ArrowRight") props.onNext();
+        }
+        window.addEventListener("keydown", onKey);
+        return function () { window.removeEventListener("keydown", onKey); };
+      }, [props.onClose, props.onPrev, props.onNext]);
+
+      var stop = function (event) {
+        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      };
+
+      var navBtn = function (className, label, onClick, text) {
+        return h("button", {
+          type: "button",
+          className: className,
+          title: label,
+          "aria-label": label,
+          onClick: function (event) { stop(event); onClick(); },
+        }, text);
+      };
+
+      return h("div", {
+        className: "__dbi_i_zoom",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-label": t("zoomOpen"),
+        onClick: function () { props.onClose(); },
+      },
+        props.hasPrev === true
+          ? navBtn("__dbi_i_zoomNav __dbi_i_zoomPrev", t("zoomPrev"), props.onPrev, "\u2039")
+          : null,
+        state.url !== ""
+          ? h("img", {
+            className: "__dbi_i_zoomImg",
+            src: state.url,
+            alt: item.imageAlt !== undefined ? item.imageAlt : (item.title || ""),
+            draggable: false,
+            onClick: stop,
+          })
+          : h("div", { className: "__dbi_i_zoomHint" }, state.error !== "" ? state.error : t("zoomLoading")),
+        props.hasNext === true
+          ? navBtn("__dbi_i_zoomNav __dbi_i_zoomNext", t("zoomNext"), props.onNext, "\u203A")
+          : null,
+        h("button", {
+          type: "button",
+          className: "__dbi_i_zoomClose",
+          title: t("close"),
+          "aria-label": t("close"),
+          onClick: function (event) { stop(event); props.onClose(); },
+        }, "\u00D7")
+      );
+    }
+
+    /**
      * 网格卡片：星标 + 1:1 视觉区 + 标题/分类两行。
      *
      * 无状态，避免展开时占 hook 槽。星标是**嵌套在卡片按钮里的 button**：
@@ -643,6 +1021,8 @@ window.__ModuleLoader__.load({
         onClick: props.onOpen,
         title: title,
         "aria-pressed": props.selected === true,
+        // 锚点定位用（见 `topVisibleCaseId` / `limitToRevealCase`）。
+        "data-case-id": String(item && item.id !== undefined ? item.id : ""),
       },
         h("div", { className: "__dbi_i_visual" },
           item.featured === true ? h("span", { className: "__dbi_i_featured" }, t("featured")) : null,
@@ -657,6 +1037,21 @@ window.__ModuleLoader__.load({
               props.onToggleFavorite();
             },
           }, "\u2605"),
+          /*
+           * 放大查看。与星标并排、同样「半透明、悬停显形」——它是**看图**入口，
+           * 不该比「收藏」更抢眼。必须 stopPropagation：外层卡片本身是 button，
+           * 不拦的话点放大也会顺带选中卡片。
+           */
+          h("button", {
+            type: "button",
+            className: "__dbi_i_cardZoom",
+            "aria-label": t("zoomOpen"),
+            title: t("zoomOpen"),
+            onClick: function (event) {
+              if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+              props.onZoom();
+            },
+          }, "\uD83D\uDD0D"),
           h(LazyInspirationThumb, {
             sourceId: props.sourceId,
             image: item.image,
@@ -667,7 +1062,7 @@ window.__ModuleLoader__.load({
         ),
         h("div", { className: "__dbi_i_cardCopy" },
           h("strong", { className: "__dbi_i_cardTitle" }, title),
-          h("span", { className: "__dbi_i_cardCategory" }, typeof item.category === "string" ? item.category : ""),
+          h("span", { className: "__dbi_i_cardCategory" }, typeof item.category === "string" ? tagLabel(item.category, props.lang) : ""),
           typeof item.sourceLabel === "string" && item.sourceLabel !== ""
             ? h("span", { className: "__dbi_i_cardSource" }, item.sourceLabel)
             : null
@@ -676,10 +1071,50 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 中英语言分段控件（新增）。
+     *
+     * 两个按钮而不是一个循环按钮：用户要能直接看到「当前是哪一档」以及
+     * 「另一档是什么」，循环按钮得点一下才知道自己在哪。
+     *
+     * 页头和检查器里各放一个，**绑的是同一个 state**——不管从哪切，
+     * 所有位置一起变，这是「切换就切换所有」的实现方式。
+     */
+    function LangSwitch(props) {
+      var t = props.t;
+      var lang = props.lang === "zh" ? "zh" : "en";
+      var options = [
+        { key: "zh", label: t("langZhShort"), text: t("langZh") },
+        { key: "en", label: t("langEnShort"), text: t("langEn") },
+      ];
+      return h("div", {
+        className: "__dbi_i_langSwitch" + (props.small === true ? " __dbi_i_langSwitchSmall" : ""),
+        role: "group",
+        "aria-label": t("langTitle"),
+        title: t("langTitle"),
+      },
+        options.map(function (option) {
+          var on = option.key === lang;
+          return h("button", {
+            key: option.key,
+            type: "button",
+            className: "__dbi_i_langBtn" + (on ? " __dbi_i_langBtnOn" : ""),
+            "aria-pressed": on,
+            title: option.text,
+            onClick: function () { props.onChange(option.key); },
+          }, option.label);
+        })
+      );
+    }
+
+    /**
      * C5 右侧 sticky 检查器（对齐官方 `.dsh-ig-inspiration-inspector`）。
      *
      * 「图 + 标题 + 出处 + 标签 + Prompt + 操作按钮」全部塞在这里，不再用弹层。
      * 空选时给一句引导而不是留白——否则用户以为面板坏了。
+     *
+     * 改动：Prompt 区块支持中英切换与「对照」双框。**复制与「用它生图」
+     * 永远取 `item.prompt`（英文原文）**，跟当前显示语言无关——中文只用来读，
+     * 用来生图会改掉画面里该出现的文字。
      */
     function InspirationInspector(props) {
       var t = props.t;
@@ -690,10 +1125,57 @@ window.__ModuleLoader__.load({
       var item = props.item;
       var styleTags = Array.isArray(item.styles) ? item.styles.slice(0, 3) : [];
       var sceneTags = Array.isArray(item.scenes) ? item.scenes.slice(0, 3) : [];
-      var prompt = item.prompt !== undefined ? String(item.prompt) : "";
+      var promptEn = item.prompt !== undefined ? String(item.prompt) : "";
+      var promptLang = props.promptLang === "zh" ? "zh" : "en";
+      var hasZh = isTranslated(item);
+      var promptZh = hasZh ? String(item.promptZh) : "";
+      var prompt = promptLang === "zh" ? pickPrompt(item, "zh") : promptEn;
+      var showingZh = promptLang === "zh" && hasZh;
       var url = typeof item.sourceUrl === "string" && item.sourceUrl !== ""
         ? item.sourceUrl
         : (typeof item.githubUrl === "string" && item.githubUrl !== "" ? item.githubUrl : "");
+
+      /*
+       * Prompt 区块的三种渲染形态：
+       *   - 单框（默认）：当前语言一段
+       *   - 对照：中英各一框，上下排——并排会让每边只剩 120px，
+       *     这批 Prompt 平均 1257 字符，挤成竖条根本没法读。
+       *   - 中文模式但这条没译文：显示英文原文 + 一行说明，而不是留白。
+       */
+      var promptNodes = [];
+      if (props.dual === true) {
+        promptNodes.push(
+          h("div", { key: "zh", className: "__dbi_i_promptBlock" },
+            h("div", { className: "__dbi_i_promptLabel" },
+              h("span", {}, t("langZh")),
+              h("span", { className: "__dbi_i_promptCount" }, hasZh ? String(promptZh.length) : t("noZh"))
+            ),
+            hasZh
+              ? h("p", { className: "__dbi_i_prompt __dbi_i_promptDual __dbi_i_promptZh" }, promptZh)
+              : h("p", { className: "__dbi_i_prompt __dbi_i_promptDual __dbi_i_promptEmpty" }, t("noZh"))
+          ),
+          h("div", { key: "en", className: "__dbi_i_promptBlock" },
+            h("div", { className: "__dbi_i_promptLabel" },
+              h("span", {}, t("langEn")),
+              h("span", { className: "__dbi_i_promptCount" }, String(promptEn.length))
+            ),
+            h("p", { className: "__dbi_i_prompt __dbi_i_promptDual" }, promptEn)
+          )
+        );
+      } else {
+        promptNodes.push(
+          h("div", { key: "single", className: "__dbi_i_promptBlock" },
+            h("div", { className: "__dbi_i_promptLabel" },
+              h("span", {}, t("prompt")),
+              h("span", { className: "__dbi_i_promptCount" }, String(prompt.length))
+            ),
+            h("p", { className: "__dbi_i_prompt" + (showingZh ? " __dbi_i_promptZh" : "") }, prompt),
+            promptLang === "zh" && !hasZh
+              ? h("p", { className: "__dbi_i_promptNotice" }, t("noZh"))
+              : null
+          )
+        );
+      }
 
       return h("aside", { className: "__dbi_i_inspector", "aria-label": t("prompt") },
         h("div", { className: "__dbi_i_inspectorImage" },
@@ -722,18 +1204,27 @@ window.__ModuleLoader__.load({
             : null,
           h("div", { className: "__dbi_i_tags" },
             typeof item.category === "string" && item.category !== ""
-              ? h("span", { key: "__cat", className: "__dbi_i_tag" }, item.category)
+              ? h("span", { key: "__cat", className: "__dbi_i_tag" }, tagLabel(item.category, props.lang))
               : null,
-            styleTags.map(function (name) { return h("span", { key: "s-" + name, className: "__dbi_i_tag" }, String(name)); }),
-            sceneTags.map(function (name) { return h("span", { key: "c-" + name, className: "__dbi_i_tag" }, String(name)); })
+            styleTags.map(function (name) { return h("span", { key: "s-" + name, className: "__dbi_i_tag" }, tagLabel(name, props.lang)); }),
+            sceneTags.map(function (name) { return h("span", { key: "c-" + name, className: "__dbi_i_tag" }, tagLabel(name, props.lang)); })
           ),
-          h("div", { className: "__dbi_i_promptLabel" },
-            h("span", {}, t("prompt")),
-            h("span", { className: "__dbi_i_promptCount" }, String(prompt.length))
+          h("div", { className: "__dbi_i_promptBar" },
+            h(LangSwitch, { t: t, lang: promptLang, onChange: props.onPromptLang, small: true }),
+            h("button", {
+              type: "button",
+              className: "__dbi_i_dualBtn" + (props.dual === true ? " __dbi_i_dualBtnOn" : ""),
+              "aria-pressed": props.dual === true,
+              onClick: props.onToggleDual,
+            }, t("dual"))
           ),
-          h("p", { className: "__dbi_i_prompt" }, prompt),
+          promptNodes,
           h("div", { className: "__dbi_i_actions" },
-            h("button", { type: "button", className: "__dbi_i_copy", onClick: props.onCopy },
+            /*
+             * 复制按钮的 title 明确写「复制的是英文原文」——界面上可能正显示
+             * 中文，不写清楚会让人以为复制走了译文，粘到生图框里才发现全错。
+             */
+            h("button", { type: "button", className: "__dbi_i_copy", title: t("promptCopyHint"), onClick: props.onCopy },
               props.copied === "ok" ? t("copied") : (props.copied === "fail" ? t("copyFailed") : t("copy"))
             ),
             url !== ""
@@ -804,6 +1295,14 @@ window.__ModuleLoader__.load({
       var selected = selectedPair[0];
       var setSelected = selectedPair[1];
 
+      /*
+       * 放大查看的目标。与「选中」分开：选中驱动右侧检查器，放大只是看一眼大图，
+       * 关掉弹层后检查器还留在原处，不该被顺手清掉。
+       */
+      var zoomPair = react.useState(null);
+      var zoomed = zoomPair[0];
+      var setZoomed = zoomPair[1];
+
       var copiedPair = react.useState("");
       var copied = copiedPair[0];
       var setCopied = copiedPair[1];
@@ -826,6 +1325,36 @@ window.__ModuleLoader__.load({
       var jumpPair = react.useState("");
       var pendingJump = jumpPair[0];
       var setPendingJump = jumpPair[1];
+
+      /*
+       * 中英切换（新增）。
+       *
+       * **语言选择持久化到 localStorage**：用户切到中文是长期偏好，
+       * 关掉面板再打开又要重新点一次会很烦。读写都 try/catch——
+       * 隐私模式下 localStorage 会抛，抛了最多是「不记忆」，不能白屏。
+       *
+       * 两个 state 的分工：
+       *   `promptLang` —— 读 Prompt 用哪种语言（"zh" / "en"）
+       *   `dual`      —— 是否中英对照并排
+       * 两者独立：对照模式下 promptLang 不参与渲染，但仍要保留它的值，
+       * 否则关掉对照会跳回默认语言，用户刚才的选择白点了。
+       */
+      var promptLangPair = react.useState(function () { return readPromptLang(); });
+      /** 用户存过的偏好；空串表示「没选过，跟随界面语言」。 */
+      var promptLangStored = promptLangPair[0];
+      var setPromptLang = promptLangPair[1];
+      /** 实际生效的阅读语言。 */
+      var promptLang = resolvePromptLang(promptLangStored, lang);
+
+      var dualPair = react.useState(function () { return readDual(); });
+      var dual = dualPair[0];
+      var setDual = dualPair[1];
+
+      // 只持久化「用户明确选过」的值；没选过就一直是空串，跟着界面语言走。
+      react.useEffect(function () {
+        if (promptLangStored === "zh" || promptLangStored === "en") writePromptLang(promptLangStored);
+      }, [promptLangStored]);
+      react.useEffect(function () { writeDual(dual); }, [dual]);
 
       source = pickActiveSource(catalogState.catalog, activeSourceId);
 
@@ -852,12 +1381,30 @@ window.__ModuleLoader__.load({
       // C4：只对已渲染的条目分组，避免把还没加载出来的组标题提前排上。
       var groups = react.useMemo(function () { return groupByCategory(visible, categories); }, [visible, categories]);
 
+      /*
+       * 放大弹窗的「上一张 / 下一张」按**屏幕上真实的阅读顺序**走，
+       * 也就是分组铺开后的顺序，而不是 `matching` 的原始顺序——两者在
+       * 分类分组下并不一致，用错顺序会让左右键跳得莫名其妙。
+       */
+      var flatOrder = react.useMemo(function () {
+        var out = [];
+        for (var gi = 0; gi < groups.length; gi += 1) {
+          var items = groups[gi].items;
+          for (var ii = 0; ii < items.length; ii += 1) out.push(items[ii]);
+        }
+        return out;
+      }, [groups]);
+
       // 分组结构签名：C2 的「当前分组」高亮由它驱动，不是逐帧重算。
       var signature = groupSignature(groups);
 
       var groupRefs = react.useRef({});
       /** 见 `handleRefresh` 上方那段注释：区分「刚点下刷新」与「真的转过了」。 */
       var refreshSeenLoadingRef = react.useRef(false);
+      /** 滚动容器（`.__dbi_i_root` 自己是滚动者），锚点上报与还原都要它的 rect / scrollTop。 */
+      var rootRef = react.useRef(null);
+      /** 已经还原过的锚点：同一个锚点只处理一次，否则用户一滚动就被拽回去。 */
+      var restoredAnchorRef = react.useRef("");
 
       /**
        * C2 的「当前可见分组」：IntersectionObserver 盯着每个组标题，
@@ -998,6 +1545,85 @@ window.__ModuleLoader__.load({
         };
       }, [pendingJump, matching, visibleLimit]);
 
+      /**
+       * 锚点上报：滚动停下来之后，把「视口顶部是哪张卡」告诉外层容器。
+       *
+       * 为什么交给容器保管而不是自己存：切走之后本 chunk 整个被卸载，state 全丢；
+       * 容器活得比我们久。150ms 去抖是因为滚动事件每帧都来，而每次上报都要读
+       * 一次 DOM + 写一次 localStorage。
+       */
+      react.useEffect(function () {
+        var root = rootRef.current;
+        if (root === null || root === undefined || typeof root.addEventListener !== "function") return undefined;
+        if (typeof props.onAnchorChange !== "function") return undefined;
+        var timer = 0;
+        var lastSent = "";
+        function report() {
+          timer = 0;
+          var id = topVisibleCaseId(root);
+          if (id === "" || id === lastSent) return;
+          lastSent = id;
+          props.onAnchorChange(id);
+        }
+        function onScroll() {
+          if (timer !== 0) return;
+          if (typeof setTimeout !== "function") {
+            report();
+            return;
+          }
+          timer = setTimeout(report, 150);
+        }
+        root.addEventListener("scroll", onScroll, { passive: true });
+        return function () {
+          if (timer !== 0 && typeof clearTimeout === "function") clearTimeout(timer);
+          if (typeof root.removeEventListener === "function") root.removeEventListener("scroll", onScroll);
+        };
+      }, [props.onAnchorChange, catalogState.status, matching]);
+
+      /**
+       * 锚点还原：回到上次停在的那张卡。
+       *
+       * 与上面的分类跳转是同一套三步收敛——先算要不要扩窗，扩窗后等重渲染，
+       * 渲染出来再定位。`restoredAnchorRef` 保证同一个锚点只处理一次：否则用户
+       * 自己往下滚，这个 effect 又把人拽回原处。
+       *
+       * 定位不用 `scrollIntoView`：那会把外层页面一起滚。这里只改自己的 scrollTop。
+       */
+      react.useEffect(function () {
+        var want = typeof props.restoreAnchor === "string" ? props.restoreAnchor : "";
+        if (want === "") return undefined;
+        if (catalogState.status !== "ready") return undefined;
+        if (restoredAnchorRef.current === want) return undefined;
+        var needed = limitToRevealCase(matching, want, visibleLimit);
+        if (needed === 0) {
+          // 这个案例不在当前结果里（筛选变了、换了数据源）——放弃，别再试。
+          restoredAnchorRef.current = want;
+          return undefined;
+        }
+        if (needed > visibleLimit) {
+          setVisibleLimit(needed);
+          return undefined;
+        }
+        if (typeof requestAnimationFrame !== "function") return undefined;
+        var raf = requestAnimationFrame(function () {
+          restoredAnchorRef.current = want;
+          var root = rootRef.current;
+          if (root === null || root === undefined || typeof root.querySelector !== "function") return;
+          var node;
+          try {
+            node = root.querySelector('[data-case-id="' + escapeAnchorId(want) + '"]');
+          } catch (error) {
+            return;
+          }
+          if (node === null || node === undefined || typeof node.getBoundingClientRect !== "function") return;
+          var offset = node.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+          root.scrollTop = offset > 0 ? offset : 0;
+        });
+        return function () {
+          if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf);
+        };
+      }, [props.restoreAnchor, catalogState.status, matching, visibleLimit]);
+
       /** C11「刷新」：重新 GET 目录（Host 每次 GET 都会重新读目录）。 */
       /**
        * 刷新中的收尾。
@@ -1099,7 +1725,7 @@ window.__ModuleLoader__.load({
         );
       }
 
-      /* ── 头部（含 C11 两个按钮）── */
+      /* ── 头部（含 C11 两个按钮 + 中英切换）── */
       var header = h("header", { className: "__dbi_i_head" },
         h("div", { className: "__dbi_i_headText" },
           h("p", { className: "__dbi_i_kicker" }, t("kicker")),
@@ -1107,6 +1733,16 @@ window.__ModuleLoader__.load({
           h("p", { className: "__dbi_i_subtitle" }, t("subtitle"))
         ),
         h("div", { className: "__dbi_i_headActions" },
+          /*
+           * 全局中英开关。放在页头而不是某个 Prompt 框里，是因为它管的是
+           * **整个灵感库的阅读语言**：列表标题、检查器 Prompt、缺译文提示
+           * 都跟着它走。检查器里那个小的是同一个 state 的第二个入口。
+           */
+          h(LangSwitch, {
+            t: t,
+            lang: promptLang,
+            onChange: setPromptLang,
+          }),
           h("button", {
             type: "button",
             className: "__dbi_i_clearCache",
@@ -1190,7 +1826,7 @@ window.__ModuleLoader__.load({
             onChange: function (event) { setCategory(event && event.target ? event.target.value : ""); },
           },
             [h("option", { key: "__all", value: "" }, t("allCategories"))].concat(
-              categories.map(function (name) { return h("option", { key: String(name), value: String(name) }, String(name)); })
+              categories.map(function (name) { return h("option", { key: String(name), value: String(name) }, tagLabel(name, promptLang)); })
             )
           ),
           h("select", {
@@ -1200,7 +1836,7 @@ window.__ModuleLoader__.load({
             onChange: function (event) { setStyle(event && event.target ? event.target.value : ""); },
           },
             [h("option", { key: "__all", value: "" }, t("allStyles"))].concat(
-              styles.map(function (name) { return h("option", { key: String(name), value: String(name) }, String(name)); })
+              styles.map(function (name) { return h("option", { key: String(name), value: String(name) }, tagLabel(name, promptLang)); })
             )
           ),
           h("select", {
@@ -1210,7 +1846,7 @@ window.__ModuleLoader__.load({
             onChange: function (event) { setScene(event && event.target ? event.target.value : ""); },
           },
             [h("option", { key: "__all", value: "" }, t("allScenes"))].concat(
-              scenes.map(function (name) { return h("option", { key: String(name), value: String(name) }, String(name)); })
+              scenes.map(function (name) { return h("option", { key: String(name), value: String(name) }, tagLabel(name, promptLang)); })
             )
           )
         );
@@ -1238,9 +1874,10 @@ window.__ModuleLoader__.load({
                 disabled: count === 0,
                 "aria-current": isActive ? "true" : undefined,
                 className: "__dbi_i_catnavChip" + (isActive ? " __dbi_i_catnavChipOn" : ""),
+                title: String(name),
                 onClick: function () { jumpToCategory(name); },
               },
-                h("span", {}, String(name)),
+                h("span", {}, tagLabel(name, promptLang)),
                 h("em", { className: "__dbi_i_catnavCount" }, String(count))
               );
             })
@@ -1261,10 +1898,12 @@ window.__ModuleLoader__.load({
                 item: item,
                 sourceId: source.id,
                 t: t,
+                lang: promptLang,
                 selected: selected !== null && selected.id === item.id,
                 favorited: isFavorited(favorites, key),
                 onToggleFavorite: function () { toggleFavorite(item.id); },
                 onOpen: function () { setSelected(item); setCopied(""); },
+                onZoom: function () { setZoomed(item); },
               });
             });
             return h("section", {
@@ -1275,7 +1914,7 @@ window.__ModuleLoader__.load({
                 className: "__dbi_i_groupHead",
                 ref: function (node) { groupRefs.current[group.name] = node; },
               },
-                h("span", {}, String(group.name)),
+                h("span", {}, tagLabel(group.name, promptLang)),
                 h("em", { className: "__dbi_i_groupCount" }, String(countOf(counts, group.name) || group.items.length))
               ),
               h("div", { className: "__dbi_i_grid" }, cards)
@@ -1301,14 +1940,29 @@ window.__ModuleLoader__.load({
           catnav,
           h("div", { className: "__dbi_i_layout" },
             h("div", { className: "__dbi_i_main" },
-              h("div", { className: "__dbi_i_summary" }, t("results", { count: matching.length })),
+              h("div", { className: "__dbi_i_summary" },
+                h("span", {}, t("results", { count: matching.length })),
+                /*
+                 * 译文覆盖度提示：数据集随时可能比译文新，用户点开一条
+                 * 发现是英文时，至少能从这行知道「整体翻了多少」，
+                 * 而不是以为切换坏了。
+                 */
+                h("span", { className: "__dbi_i_summaryZh" },
+                  t("zhCount", { count: countTranslated(source.cases), total: source.cases.length })
+                )
+              ),
               listBody
             ),
             h(InspirationInspector, {
               item: selected,
               sourceId: source.id,
               t: t,
+              lang: promptLang,
               copied: copied,
+              promptLang: promptLang,
+              dual: dual,
+              onPromptLang: setPromptLang,
+              onToggleDual: function () { setDual(function (prev) { return !prev; }); },
               favorited: selected !== null && isFavorited(favorites, favoriteKey(source.id, selected.id)),
               onToggleFavorite: function () { if (selected !== null) toggleFavorite(selected.id); },
               onCopy: handleCopy,
@@ -1325,10 +1979,41 @@ window.__ModuleLoader__.load({
             role: "status",
           }, String(notice.text));
 
-      return h("section", { className: "__dbi_i_root", "aria-label": t("title") },
+      /*
+       * 放大弹层。`source` 为空（目录还没加载出来）时不渲染；条目被筛掉
+       * （`zoomIndex < 0`）时也自动收起，避免停留在一张已经不在列表里的图上。
+       */
+      var zoomIndex = -1;
+      if (zoomed !== null && source !== null && source !== undefined) {
+        for (var zi = 0; zi < flatOrder.length; zi += 1) {
+          var cand = flatOrder[zi];
+          if (cand === zoomed || (cand !== null && zoomed !== null && cand.id === zoomed.id)) {
+            zoomIndex = zi;
+            break;
+          }
+        }
+      }
+
+      var zoomNode = zoomIndex < 0
+        ? null
+        : h(InspirationZoom, {
+          t: t,
+          item: flatOrder[zoomIndex],
+          sourceId: source.id,
+          index: zoomIndex,
+          total: flatOrder.length,
+          hasPrev: zoomIndex > 0,
+          hasNext: zoomIndex < flatOrder.length - 1,
+          onClose: function () { setZoomed(null); },
+          onPrev: function () { if (zoomIndex > 0) setZoomed(flatOrder[zoomIndex - 1]); },
+          onNext: function () { if (zoomIndex < flatOrder.length - 1) setZoomed(flatOrder[zoomIndex + 1]); },
+        });
+
+      return h("section", { className: "__dbi_i_root", "aria-label": t("title"), ref: rootRef },
         header,
         body,
-        noticeNode
+        noticeNode,
+        zoomNode
       );
     }
 
@@ -1369,7 +2054,8 @@ window.__ModuleLoader__.load({
       ".__dbi_i_body{display:flex;flex-direction:column;gap:10px;min-height:0}",
       ".__dbi_i_list{display:flex;flex-direction:column}",
       ".__dbi_i_groupWrap{display:flex;flex-direction:column}",
-      ".__dbi_i_summary{height:24px;display:flex;align-items:center;font-size:11.5px;color:var(--dsw-alias-label-secondary)}",
+      ".__dbi_i_summary{height:24px;display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}",
+      ".__dbi_i_summaryZh{font-size:10.5px;color:var(--dsw-alias-label-tertiary)}",
       /* C4：sticky 分组标题 + 组内计数。 */
       ".__dbi_i_group{margin:0}",
       ".__dbi_i_groupHead{position:sticky;top:48px;z-index:5;display:flex;align-items:center;gap:8px;margin:6px 0 10px;padding:7px 2px;font-size:12px;font-weight:700;letter-spacing:.02em;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);scroll-margin-top:48px}",
@@ -1415,6 +2101,29 @@ window.__ModuleLoader__.load({
       ".__dbi_i_promptLabel{display:flex;align-items:center;justify-content:space-between;margin:0 0 6px;font-size:10.5px;font-weight:650;color:var(--dsw-alias-label-tertiary)}",
       ".__dbi_i_promptCount{font-weight:500;opacity:.8}",
       ".__dbi_i_prompt{max-height:155px;margin:0;padding:9px;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-layer-2);font-size:11px;line-height:1.55;color:var(--dsw-alias-label-secondary)}",
+      /* ── 新增：中英切换 + 对照 ── */
+      ".__dbi_i_langSwitch{display:inline-flex;padding:2px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-layer-1);flex-shrink:0}",
+      ".__dbi_i_langBtn{min-width:30px;height:26px;padding:0 8px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11.5px;font-weight:600;line-height:1;cursor:pointer;transition:background .15s ease,color .15s ease}",
+      ".__dbi_i_langBtn:hover{color:var(--dbi-i-blue)}",
+      ".__dbi_i_langBtnOn{background:linear-gradient(135deg,#386cf6,#2758e7);color:#fff}",
+      ".__dbi_i_langBtnOn:hover{color:#fff}",
+      ".__dbi_i_langSwitchSmall .__dbi_i_langBtn{min-width:26px;height:22px;font-size:10.5px}",
+      /* Prompt 区块上方的控制条：语言分段 + 对照开关。 */
+      ".__dbi_i_promptBar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px}",
+      ".__dbi_i_dualBtn{height:26px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;font-weight:600;white-space:nowrap;cursor:pointer}",
+      ".__dbi_i_dualBtn:hover{border-color:rgba(47,100,245,.46);color:var(--dbi-i-blue)}",
+      ".__dbi_i_dualBtnOn{background:#eef3ff;border-color:var(--dbi-i-blue);color:var(--dbi-i-blue)}",
+      ".__dbi_i_promptBlock{margin:0 0 10px}",
+      ".__dbi_i_promptBlock:last-of-type{margin-bottom:0}",
+      /*
+       * 对照模式下两个框都限高，但比单框矮一点（上下并排，总高要压住）。
+       * 超过就各自滚动——这批 Prompt 平均 1257 字符、最长 8143，
+       * 不滚动会把检查器撑成一根长条，图都被顶出视野。
+       */
+      ".__dbi_i_promptZh{border-color:rgba(47,100,245,.24);background:rgba(47,100,245,.04)}",
+      ".__dbi_i_promptEmpty{color:var(--dsw-alias-label-tertiary);font-style:italic}",
+      ".__dbi_i_promptNotice{margin:6px 0 0;font-size:10.5px;color:var(--dsw-alias-label-tertiary)}",
+      ".__dbi_i_promptDual{max-height:118px}",
       ".__dbi_i_actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px}",
       ".__dbi_i_actions button,.__dbi_i_link{height:34px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;text-decoration:none}",
       ".__dbi_i_actions button:hover,.__dbi_i_link:hover{border-color:rgba(47,100,245,.46);color:var(--dbi-i-blue)}",
@@ -1426,6 +2135,28 @@ window.__ModuleLoader__.load({
       "@media(max-width:980px){.__dbi_i_layout{grid-template-columns:1fr}.__dbi_i_inspector{position:relative;top:auto}.__dbi_i_inspectorEmpty{min-height:150px}}",
       "@media(max-width:700px){.__dbi_i_root{padding:12px}.__dbi_i_head{align-items:center}.__dbi_i_toolbar{grid-template-columns:1fr 1fr}.__dbi_i_search{grid-column:1/-1}.__dbi_i_favFilter{grid-column:1/-1}.__dbi_i_grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:9px}}",
       "@media(max-width:420px){.__dbi_i_toolbar{grid-template-columns:1fr}.__dbi_i_search{grid-column:auto}.__dbi_i_head{flex-direction:column}.__dbi_i_headActions{width:100%}}",
+      /* 卡片右上角的放大按钮：与星标同款「半透明、悬停显形」，排在星标左边。 */
+      ".__dbi_i_cardZoom{position:absolute;top:6px;right:36px;z-index:3;width:24px;height:24px;display:grid;place-items:center;padding:0;border:none;border-radius:999px;background:rgba(15,23,42,.42);color:#fff;font-size:11px;line-height:1;cursor:pointer;opacity:.55;transition:opacity .15s ease,color .15s ease}",
+      ".__dbi_i_card:hover .__dbi_i_cardZoom{opacity:1}",
+      ".__dbi_i_cardZoom:hover{color:#7dd3fc}",
+      /*
+       * 放大弹层。样式刻意对齐图库的灯箱（`.__dbi_g_lightbox`）：同一个深色遮罩、
+       * 同样 `max-height:calc(100% - 72px)` + `object-fit:contain` 的大图。
+       * 两处「点开看大图」的手感应该一致，不该一个黑一个白。
+       */
+      ".__dbi_i_zoom{position:fixed;inset:0;z-index:2100;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;background:rgba(0,0,0,.72);cursor:zoom-out}",
+      ".__dbi_i_zoomImg{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;display:block;user-select:none;-webkit-user-drag:none;cursor:default}",
+      ".__dbi_i_zoomHint{padding:14px 18px;border-radius:8px;background:rgba(15,23,42,.82);color:#fff;font-size:12px;cursor:default}",
+      ".__dbi_i_zoomNav{position:fixed;top:50%;transform:translateY(-50%);z-index:2101;width:44px;height:44px;display:grid;place-items:center;padding:0;border:none;border-radius:999px;background:rgba(15,23,42,.5);color:#fff;font-size:22px;line-height:1;cursor:pointer}",
+      ".__dbi_i_zoomNav:hover{background:rgba(15,23,42,.78)}",
+      ".__dbi_i_zoomPrev{left:16px}",
+      ".__dbi_i_zoomNext{right:16px}",
+      /*
+       * 关闭只有右上角一个 ×：底部刻意留空（不照搬图库灯箱那条工具栏），
+       * 否则会和「下载 / 复制图片 / 重新生成」混淆——那些操作在卡片检查器里。
+       */
+      ".__dbi_i_zoomClose{position:fixed;top:16px;right:16px;z-index:2101;width:34px;height:34px;display:grid;place-items:center;padding:0;border:none;border-radius:999px;background:rgba(15,23,42,.5);color:#fff;font-size:20px;line-height:1;cursor:pointer}",
+      ".__dbi_i_zoomClose:hover{background:rgba(15,23,42,.78)}",
     ].join(""));
 
     exports.Mount = Mount;
@@ -1448,6 +2179,16 @@ window.__ModuleLoader__.load({
         pickLang: pickLang,
         makeT: makeT,
         filterCases: filterCases,
+        pickPrompt: pickPrompt,
+        isTranslated: isTranslated,
+        countTranslated: countTranslated,
+        tagLabel: tagLabel,
+        TAG_ZH: TAG_ZH,
+        readPromptLang: readPromptLang,
+        resolvePromptLang: resolvePromptLang,
+        writePromptLang: writePromptLang,
+        readDual: readDual,
+        writeDual: writeDual,
         sliceVisible: sliceVisible,
         canLoadMore: canLoadMore,
         pickActiveSource: pickActiveSource,
@@ -1456,6 +2197,9 @@ window.__ModuleLoader__.load({
         groupByCategory: groupByCategory,
         groupSignature: groupSignature,
         limitToRevealCategory: limitToRevealCategory,
+      limitToRevealCase: limitToRevealCase,
+      topVisibleCaseId: topVisibleCaseId,
+      escapeAnchorId: escapeAnchorId,
         favoriteKey: favoriteKey,
         isFavorited: isFavorited,
         toggleFavoriteKey: toggleFavoriteKey,
@@ -1466,6 +2210,7 @@ window.__ModuleLoader__.load({
         useInspirationImage: useInspirationImage,
         LazyInspirationThumb: LazyInspirationThumb,
         InspirationThumb: InspirationThumb,
+        InspirationZoom: InspirationZoom,
         INSPIRATION_ROUTE: INSPIRATION_ROUTE,
         INSPIRATION_IMAGE_ROUTE: INSPIRATION_IMAGE_ROUTE,
         DEFAULT_VISIBLE_LIMIT: DEFAULT_VISIBLE_LIMIT,

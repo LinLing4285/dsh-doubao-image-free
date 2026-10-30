@@ -1,5 +1,55 @@
 # 更新记录
 
+## 0.3.0 — 2026-11-01
+
+灵感库体验与画廊细节的一批增强：灵感库支持中英双语、灵感图改为落盘缓存并可点开放大看、画廊记住上次的标签页与阅读位置。
+
+### 新增
+
+- **灵感库中英双语**：`awesome-gpt-image-2` 那 541 条案例原本只有英文 prompt，现在配了中文译文覆盖层 `lib/inspiration/i18n/awesome-gpt-image-2.zh.json`（结构 `{ "<caseId>": "中文" }`），**不改动原始数据集**——上游更新数据集时覆盖层照样生效，缺的条目自动回退英文。
+  - 页头「清缓存」旁与检查器 Prompt 标签行右侧各一个 `中 / EN` 分段按钮，两处绑同一状态；切一次，prompt 正文、分类名、风格名、场景名、分组标题一起换。
+  - **默认跟随界面语言**：没手动选过时中文界面读中文、英文界面读英文，不把某种语言硬编码成默认；点过开关之后该选择记进 `localStorage`（`dsh-dbi-inspiration-prompt-lang`）并优先生效。
+  - **对照模式**：Prompt 区右上角「对照」按钮，上下双框同时给出英文原文与中文译文（中文框带浅蓝底），状态存 `dsh-dbi-inspiration-dual`。
+  - **双语搜索**：`filterCases` 的搜索字段从 `[title, prompt, promptPreview]` 扩到再加上 `promptZh`、`promptPreviewZh`；**搜索始终双语**，不跟随界面语言开关。
+  - **复制与「用它生图」仍用英文原文**（`handleCopy()` / `handleUse(mode)` 读的都是 `selected.prompt`）——界面可能正显示中文，所以复制按钮的 tooltip 写明了这点。
+  - **缺译回退**：中文模式下未翻译的案例显示英文原文 + 一行提示，不会出现空白框。页头 summary 行追加「已翻译 N/M 条」。
+  - `TAG_ZH` 只映射显示名，**不改数据值**：三个筛选 `<select>` 的 `<option>` 文本换语言，`value` 仍是英文，筛选逻辑与 URL 参数不受影响。
+- **灵感图落盘缓存**：`lib/inspiration.mjs` 的 `fetchInspirationImageCached` 变成**内存 → 磁盘 → 外网**三级。
+  - 缓存目录 `$DSH_HOME/storages/dsh-doubao-image/inspiration-images/`（与画廊数据同级，卸载插件可整目录删）。
+  - 文件名 = `sha1(sourceId|version|imagePath)` + 原扩展名：用哈希而不是把数据集给的路径直接拼进文件系统，既躲开 `..`，也顺带压平 handraw 那批 `/images/individual/001-200/001.webp` 的子目录。
+  - 读失败 / 空文件 / 超过 12MiB / 扩展名不认识 → 一律当未命中；写失败静默忽略。缓存只影响速度，不影响正确性。
+  - 实测同一张 `case544.jpg` 首次 2.3–2.5s，落盘后再取 **1–4ms**。
+- **灵感图放大查看**：灵感库卡片右上角（收藏星标左边）多一个半透明放大按钮 🔍，`stopPropagation` 只开弹层、不选中卡片。弹层是全屏「纯看图」：深色遮罩 + 等比大图，右上角一个 `×`，`Esc`／点遮罩／点 × 三条退路都能关，两侧箭头与 `←` `→` 键翻页（顺序按**屏幕上分组后的阅读顺序**，不是数据集原始顺序）。**底部不放任何控件**。
+  - 按用途取舍：这批案例图是用来「看清排版和画法」的，不是抠像素，所以没有缩放 / 平移，直接用最朴素的「点开看大图」。
+  - 大图走既有的三级缓存取图路径，未新增路由、未新增计费。
+- **画廊标签页与滚动位置记忆**：不再每次点进工具都回到图库首屏。
+  - 模块级 `VIEW_STATE_STORAGE_KEY = "dsh-dbi-gallery-view"`，存 `{ tab, scroll: {[tabId]: px}, anchor: {[tabId]: caseId} }`。
+  - `readViewState()` 任何异常（没有 `localStorage`、JSON 坏了、形状不对、数值非法）一律退回空形状；`writeViewState(patch)` 读-合并-写，`patch.scroll` / `patch.anchor` **按标签页局部覆盖**，不会把别的标签页记下的位置抹掉。
+  - `Mount` 的 `activePair` 惰性初始化自存档，**存档里的 id 不在 `TABS` 里时回落 `"gallery"`**（插件升级后删掉的标签页不会渲染成空白）；所有切标签页入口（点标签、灵感库「用它生图」跳工作台）统一走 `switchTab(id)`。
+  - 新增 `findScrollHost(container)`：按 `getComputedStyle(node).overflowY === "auto" | "scroll"` 找真正的滚动者，**不写死类名**——图库/视频是 `.__dbi_g_pageBody`，灵感库是它自己 chunk 里的 `.__dbi_i_root`，工作台又是另一套。
+  - **灵感库用「锚点法」**：灵感库是分页渲染的（首屏 60 张，其余靠手点「加载更多」），切回来时容器里根本没有原来那么高的内容，**像素位置无从还原**，所以记住「上次停在哪个案例上」——卡片渲染 `data-case-id`；滚动停下 150ms 后 `topVisibleCaseId()` 在 DOM 上**二分**找出视口顶部那张卡（DOM 顺序即视觉顺序，541 张卡上线性扫每帧要读几百次 `getBoundingClientRect`）；切回来时 `limitToRevealCase()` 先把窗口推到「含这张卡 + 下面再留一页」（留一页是因为滚动位置受 `scrollHeight - clientHeight` 限制，锚点若是最后一张就只能停在视口底部，位置会差一屏），渲染完再按 `getBoundingClientRect().top` 差算偏移赋给 `root.scrollTop`——**不用 `scrollIntoView`**，那会连外层页面一起滚。
+  - 锚点法的收敛方式与插件原有的分类跳转（`jumpToCategory`）一致：`needed > visibleLimit` 就扩窗并等重渲染，`needed === 0`（锚点不在当前结果里，比如换了筛选）就放弃；同一个锚点只处理一次，否则用户一滚动就被拽回去。装了锚点的标签页不再走像素恢复，两种定位不打架；图库 / 视频这些同步渲染的标签页仍用像素。
+  - **灵感库目录加了模块级缓存**：目录约 1.9 MB / 976 条案例，以前每次切回来都要重新 `fetch` + `JSON.parse` + 三级分组；现在只缓存**成功**的结果（失败不写，免得一次网络抖动被记一辈子），「刷新」按钮仍强制重拉。
+
+### 改动
+
+- `lib/inspiration.mjs`：`parseSource(value, meta, zhMap)` 增加第三参；新增 `loadTranslations(sourceId)` 与 `MAX_TRANSLATION_BYTES`（4MiB）。有译文时 case 上多出 `promptZh` 与 `promptPreviewZh`（`promptZh.slice(0, 280)`），**无译文时这两个键不出现**，客户端据此判断。
+- `client.inspiration.js`：新增 `LangSwitch` 组件、`TAG_ZH`（13 分类 + 19 风格 + 10 场景）、`pickPrompt` / `isTranslated` / `countTranslated` / `tagLabel` / `resolvePromptLang` / `readPromptLang` / `writePromptLang` / `readDual` / `writeDual` / `limitToRevealCase` / `topVisibleCaseId` / `escapeAnchorId` / `InspirationZoom`。
+- `client.gallery.js`：新增 `VIEW_STATE_STORAGE_KEY` / `readViewState` / `writeViewState` / `findScrollHost` / `switchTab` / `anchorMemory` / `rememberAnchor`。
+- `client.js`：画廊在 `conversation.view` 里的 `order` 由 **20 → 22**。上游取 20 是照官方 `dsh-image-gen` 的写法，但常见第三方视图会占 20 / 21，同值会让画廊夹在两者中间；22 落在它们之后、「上下文」（30）之前。**只改自己注册项的 order，不碰别人的注册项，也不依赖宿主内部结构。**
+
+### 修正
+
+- **切来切去滚动位置会被重置**：恢复逻辑里有两处把「假 0」当真——① 切回来时 chunk 还在异步加载，`scrollHeight` 是 0，读到的 `scrollTop` 自然也是 0；② 切走时 React 已经把子树从 DOM 摘掉，`useEffect` 的 cleanup 再去读 `host.scrollTop` 还是 0。于是「上次滑到 3000」被洗成 0 落盘，下次回来就停在顶部。现在加了两道闸门：`settled`（内容高度没长起来之前一律不落盘）+ `host.isConnected`（节点已脱离文档就不重读），滚动位置只由 `scroll` 事件持续记忆。
+
+### 说明
+
+- 只用了 `localStorage` 两个键 + 目录缓存，**不新增路由、不写 Host 侧状态**；清掉浏览器站点数据最多退回默认视图。
+- 译文是**可选增强**：覆盖层缺失、解析失败、体积超限，`loadTranslations` 一律返回 `{}`，灵感库退回纯英文，不会因为译文文件坏掉而整个罢工。
+- 磁盘缓存没有接进界面的「清缓存」按钮（那个按钮只 revoke 内存里的 blob URL）；要清就删上面那个目录。缓存文件名含数据集里的 `version` 提交号，上游换 commit 才会换 key。
+- 维护提示：改完任何 `client.*.js` 都要**戳一下 `client.js` 的 mtime** 再 reload——`?rev=` 取自 `client.js` 的 `mtime + ctime + size`，改 chunk 不影响 rev，服务端会按旧 rev 返回缓存字节（详见 README「chunk 架构」）。
+
+
 ## 0.2.3 — 2026-10-28
 
 同步开发仓库 `439b42f → 83dc4ca`。修复桌面端（Electron）下画廊缩略图 / 灵感库 / 工作台全部 403 不可用的问题。

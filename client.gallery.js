@@ -2309,13 +2309,179 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * 「上次在看哪个标签页、滚到哪儿了」的持久化键。
+     *
+     * 与画廊数据（IndexedDB / Host 侧 gallery.json）完全无关，纯 UI 偏好：
+     * 丢了最多退回首屏，不会影响任何数据。
+     */
+    var VIEW_STATE_STORAGE_KEY = "dsh-dbi-gallery-view";
+
+    /**
+     * 读上次的视图状态，形状
+     * `{ tab: string, scroll: { [tabId]: number }, anchor: { [tabId]: string } }`。
+     *
+     * `scroll` 是像素位置，`anchor` 是「停在哪个案例上」。两套并存是因为
+     * 灵感库是**分页渲染**的（首屏只 60 张，「加载更多」是手点按钮）：内容
+     * 没铺开时像素毫无意义，只能靠锚点重新定位；而图库/视频是同步渲染，
+     * 像素又快又准。谁用哪套由 `Mount` 决定。
+     *
+     * 任何异常（没有 localStorage、JSON 坏了、形状不对）都退回空状态——
+     * 这只是「回到上次位置」的便利，不值得让画廊打不开。
+     */
+    function readViewState(storage) {
+      var empty = { tab: "", scroll: {}, anchor: {} };
+      try {
+        var store = storage === undefined ? (typeof globalThis === "undefined" ? null : globalThis.localStorage) : storage;
+        if (store === undefined || store === null) return { tab: "", scroll: {}, anchor: {} };
+        var raw = store.getItem(VIEW_STATE_STORAGE_KEY);
+        if (raw === null || raw === undefined || raw === "") return { tab: "", scroll: {}, anchor: {} };
+        var parsed = JSON.parse(raw);
+        if (parsed === null || typeof parsed !== "object") return { tab: "", scroll: {}, anchor: {} };
+        var scroll = {};
+        var src = parsed.scroll;
+        if (src !== null && typeof src === "object") {
+          for (var key in src) {
+            if (!Object.prototype.hasOwnProperty.call(src, key)) continue;
+            var value = src[key];
+            if (typeof value === "number" && isFinite(value) && value >= 0) scroll[key] = value;
+          }
+        }
+        var anchor = {};
+        var asrc = parsed.anchor;
+        if (asrc !== null && typeof asrc === "object") {
+          for (var akey in asrc) {
+            if (!Object.prototype.hasOwnProperty.call(asrc, akey)) continue;
+            if (typeof asrc[akey] === "string" && asrc[akey] !== "") anchor[akey] = asrc[akey];
+          }
+        }
+        return { tab: typeof parsed.tab === "string" ? parsed.tab : "", scroll: scroll, anchor: anchor };
+      } catch (error) {
+        return empty;
+      }
+    }
+
+    /**
+     * 合并写入视图状态（不清掉其他标签页记下的位置）。
+     *
+     * `patch.scroll` / `patch.anchor` 都是「只更新这几项」的意思，不是整体
+     * 替换——否则切一次标签页就会把别的标签页的滚动位置抹掉。
+     */
+    function writeViewState(patch, storage) {
+      try {
+        var store = storage === undefined ? (typeof globalThis === "undefined" ? null : globalThis.localStorage) : storage;
+        if (store === undefined || store === null) return;
+        var base = readViewState(store);
+        var next = { tab: base.tab, scroll: base.scroll, anchor: base.anchor };
+        if (patch !== null && patch !== undefined && typeof patch === "object") {
+          if (typeof patch.tab === "string") next.tab = patch.tab;
+          var scrollPatch = patch.scroll;
+          if (scrollPatch !== null && typeof scrollPatch === "object") {
+            for (var key in scrollPatch) {
+              if (!Object.prototype.hasOwnProperty.call(scrollPatch, key)) continue;
+              if (typeof scrollPatch[key] === "number" && isFinite(scrollPatch[key])) next.scroll[key] = scrollPatch[key];
+            }
+          }
+          var anchorPatch = patch.anchor;
+          if (anchorPatch !== null && typeof anchorPatch === "object") {
+            for (var akey in anchorPatch) {
+              if (!Object.prototype.hasOwnProperty.call(anchorPatch, akey)) continue;
+              // 空串表示「清掉这个标签页的锚点」，与「没传」区分开。
+              if (typeof anchorPatch[akey] !== "string") continue;
+              if (anchorPatch[akey] === "") delete next.anchor[akey];
+              else next.anchor[akey] = anchorPatch[akey];
+            }
+          }
+        }
+        store.setItem(VIEW_STATE_STORAGE_KEY, JSON.stringify(next));
+      } catch (error) {
+        /* 存不下就算了：内存里的 scrollMemory 仍在，本次会话依旧能记住。 */
+      }
+    }
+
+    /**
+     * 找出容器里真正负责滚动的那个元素。
+     *
+     * 为什么按计算样式找而不是写死类名：图库/视频是 `.__dbi_g_pageBody`，
+     * 灵感库是它自己 chunk 里的 `.__dbi_i_root`，工作台又是另一套；类名会
+     * 随重构漂移，`overflow-y: auto|scroll` 才是「能滚」这件事本身。
+     */
+    function findScrollHost(container) {
+      if (container === null || container === undefined || typeof container.querySelectorAll !== "function") return null;
+      var view = typeof globalThis !== "undefined" && typeof globalThis.getComputedStyle === "function"
+        ? globalThis
+        : (typeof window !== "undefined" ? window : null);
+      if (view === null) return null;
+      var all = container.querySelectorAll("*");
+      for (var i = 0; i < all.length; i += 1) {
+        var style = view.getComputedStyle(all[i]);
+        if (style === null || style === undefined) continue;
+        var oy = style.overflowY;
+        if (oy === "auto" || oy === "scroll") return all[i];
+      }
+      return null;
+    }
+
     function Mount(props) {
       shared.useLocale(props.locale);
       var lang = pickLang(props.locale);
       var t = makeT(lang);
-      var activePair = react.useState("gallery");
+      /*
+       * 首个渲染的标签页取「上次关掉时那个」。
+       *
+       * 惰性初始化（传函数而不是值）：只在首次挂载读一次 localStorage，
+       * 之后重渲染不再碰。值必须校验——插件升级后可能删掉某个标签页，
+       * 存档里还留着旧 id，直接 setActive 会渲染出一片空白。
+       */
+      var activePair = react.useState(function () {
+        var saved = readViewState();
+        for (var i = 0; i < TABS.length; i += 1) {
+          if (TABS[i].id === saved.tab) return saved.tab;
+        }
+        return "gallery";
+      });
       var active = activePair[0];
       var setActive = activePair[1];
+
+      /*
+       * 滚动位置的「当前值」缓存 + 容器引用。
+       *
+       * - `bodyRef` 指向 `__dbi_g_body`，滚动者要从它里面按 overflow 找。
+       * - `scrollMemory` 是内存镜像：localStorage 写失败时靠它兜底，
+       *   也让「同一会话内来回切标签页」不必读盘。
+       */
+      var bodyRef = react.useRef(null);
+      var scrollMemory = react.useRef(readViewState().scroll);
+
+      /*
+       * 锚点：`{ [tabId]: caseId }`，记「这个标签页上次停在哪个案例上」。
+       *
+       * 只有灵感库需要它——那是分页渲染的（首屏 60 张，其余靠手点「加载
+       * 更多」），切回来时容器里根本没有那么高的内容，像素位置没法还原。
+       * 锚点由灵感库自己在滚动时上报（它才知道哪张卡在视口顶部），容器只
+       * 负责存取和回传。
+       */
+      var anchorMemory = react.useRef(readViewState().anchor);
+
+      var rememberAnchor = function (id) {
+        if (typeof id !== "string" || id === "") return;
+        if (anchorMemory.current[active] === id) return;
+        anchorMemory.current[active] = id;
+        var patch = { anchor: {} };
+        patch.anchor[active] = id;
+        writeViewState(patch);
+      };
+
+      /*
+       * 切标签页 = 先记住选择、再切。
+       *
+       * 所有入口统一走这一个函数，否则会出现「点标签记住了、但从灵感库
+       * 点『用它生图』跳到工作台却没记住」这种半吊子状态。
+       */
+      var switchTab = function (id) {
+        writeViewState({ tab: id });
+        setActive(id);
+      };
 
       /*
        * 当前会话的工作区归属字段。
@@ -2412,7 +2578,8 @@ window.__ModuleLoader__.load({
           }
         }
         setStudioDraft(draft);
-        setActive("studio");
+        // 走 switchTab 而不是 setActive：这条入口也算「切标签页」，要记住。
+        switchTab("studio");
       }, []);
 
       /**
@@ -2507,6 +2674,116 @@ window.__ModuleLoader__.load({
         };
       }, [active]);
 
+      /*
+       * 记住 / 恢复滚动位置。
+       *
+       * 三件麻烦事：
+       * 1. 滚动者不是固定的 —— 图库/视频是 `.__dbi_g_pageBody`，灵感库是
+       *    它自己 chunk 里的 `.__dbi_i_root`，工作台又不同；而且 chunk 是
+       *    异步挂载的，effect 跑的时候容器里可能一个元素都没有。所以按
+       *    `overflow-y` 找，找不到就等一等再找。
+       * 2. 内容是异步加载的 —— 刚切回去时 `scrollHeight` 还没长起来，
+       *    直接赋 `scrollTop` 会被浏览器夹到 0。所以要重试几拍，每次都
+       *    重新夹到 `scrollHeight - clientHeight`。
+       * 3. 恢复动作本身会触发 scroll 事件 —— 写回时值相同就不再写，
+       *    不会自激。
+       */
+      react.useEffect(function () {
+        var container = bodyRef.current;
+        if (container === null || container === undefined) return undefined;
+        /*
+         * 有锚点的标签页（目前只有灵感库）走「锚点法」，像素不参与：
+         * 它内容没铺开时像素只会把人夹在很浅的位置，反而打乱锚点的定位。
+         * 锚点法的实现在灵感库 chunk 里（它自己有 pendingJump 那套收敛机制）。
+         */
+        if ((anchorMemory.current[active] || "") !== "") return undefined;
+        var stored = scrollMemory.current[active];
+        var target = typeof stored === "number" && isFinite(stored) && stored > 0 ? stored : 0;
+
+        var host = null;
+        var timers = [];
+        var disposed = false;
+        var pending = 0;
+        var queued = false;
+        var lastWritten = -1;
+
+        /*
+         * `settled` = 「这个容器的高度已经长起来了，读数可信」。
+         *
+         * 没这一层会出两种假 0，都是真的踩过的坑：
+         * 1. 切回来时内容还在异步加载，`scrollHeight` 是 0，此时把
+         *    `scrollTop` 读成 0 并落盘，等于把「上次滑到 3000」洗成 0；
+         * 2. 切走时 React 已经把这个子树从 DOM 里摘掉了，`useEffect`
+         *    的 cleanup 再去读 `host.scrollTop` 同样拿到 0。
+         * 所以：内容没长起来之前一律不落盘，节点已脱离文档也不读。
+         */
+        var settled = target === 0;
+
+        function flushScroll() {
+          queued = false;
+          if (!settled) return;
+          if (pending === lastWritten) return;
+          lastWritten = pending;
+          scrollMemory.current[active] = pending;
+          var patch = { tab: active, scroll: {} };
+          patch.scroll[active] = pending;
+          writeViewState(patch);
+        }
+
+        function onScroll() {
+          if (host === null || !settled) return;
+          if (host.isConnected === false) return;
+          pending = host.scrollTop;
+          if (queued) return;
+          queued = true;
+          if (typeof requestAnimationFrame === "function") requestAnimationFrame(flushScroll);
+          else flushScroll();
+        }
+
+        function acquire() {
+          if (host !== null) return true;
+          var found = findScrollHost(container);
+          if (found === null) return false;
+          host = found;
+          host.addEventListener("scroll", onScroll, { passive: true });
+          return true;
+        }
+
+        var attempt = 0;
+        function restore() {
+          if (disposed) return;
+          if (!acquire()) {
+            attempt += 1;
+            if (attempt < 20) timers.push(setTimeout(restore, 100));
+            return;
+          }
+          var max = Math.max(0, host.scrollHeight - host.clientHeight);
+          // 高度长起来了（哪怕还没长到目标值）就说明读数可信，可以开始记了。
+          if (max > 0) settled = true;
+          var wanted = Math.min(target, max);
+          if (Math.abs(host.scrollTop - wanted) > 1) host.scrollTop = wanted;
+          attempt += 1;
+          if (target > 0 && Math.abs(host.scrollTop - target) > 4 && attempt < 12) {
+            timers.push(setTimeout(restore, 120 * attempt));
+          }
+        }
+
+        restore();
+
+        return function () {
+          disposed = true;
+          for (var k = 0; k < timers.length; k += 1) clearTimeout(timers[k]);
+          if (host !== null) {
+            host.removeEventListener("scroll", onScroll);
+            // 切走前落盘一次：滚动事件的节流可能还没轮到 flush。
+            // 只有节点还挂在文档上才重新读；已摘除时读到的必然是 0，
+            // 保留 `pending` 里最后一次真实滚动值。
+            if (host.isConnected !== false) pending = host.scrollTop;
+            flushScroll();
+          }
+        };
+      }, [active]);
+
       // 自报标记：浏览器里拿不到槽表，靠这个确认 chunk 真的挂上了。
       react.useEffect(function () {
         if (typeof globalThis === "undefined") return;
@@ -2579,6 +2856,10 @@ window.__ModuleLoader__.load({
           onUsePrompt: usePrompt,
           loadingText: t("loading"),
           errorText: t("tabLoadFailed"),
+          // 锚点：进去时告诉它「上次停在哪个案例」，它自己扩窗 + 定位；
+          // 它滚动时再通过 onAnchorChange 把新锚点交回来。
+          restoreAnchor: anchorMemory.current[current.id] || "",
+          onAnchorChange: rememberAnchor,
         });
       } else if (current.id === "studio") {
         body = h(shared.ChunkMount, {
@@ -2629,13 +2910,14 @@ window.__ModuleLoader__.load({
               "aria-selected": on,
               "data-tab": tab.id,
               className: "__dbi_g_tab" + (on ? " __dbi_g_tabOn" : ""),
-              onClick: function () { setActive(tab.id); },
+              onClick: function () { switchTab(tab.id); },
             },
               tab.icon === undefined ? null : tab.icon(15),
               h("span", null, t(tab.label)));
           })
         ),
-        h("div", { className: "__dbi_g_body" }, body),
+        // bodyRef：滚动位置的读写都从这一层往下找真正的滚动者。
+        h("div", { className: "__dbi_g_body", ref: bodyRef }, body),
         // 容器级 toast：工作台生成失败时画廊标签页并没有挂载，没有它失败就看不见。
         studioToast !== null
           ? h("div", { className: "__dbi_g_toast" }, studioToast)
@@ -2763,6 +3045,10 @@ window.__ModuleLoader__.load({
       DICT: DICT,
       TABS: TABS,
       SUB_TABS: SUB_TABS,
+      VIEW_STATE_STORAGE_KEY: VIEW_STATE_STORAGE_KEY,
+      readViewState: readViewState,
+      writeViewState: writeViewState,
+      findScrollHost: findScrollHost,
       CSS: CSS,
       IMPORT_ROUTE: IMPORT_ROUTE,
       REGENERATE_ROUTE: REGENERATE_ROUTE,
