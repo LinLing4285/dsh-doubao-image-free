@@ -1,7 +1,7 @@
 {
     "name": "dsh-doubao-image-free",
-    "version": "0.2.3",
-    "description": "DeepSeek Harness 插件：把网页版豆包与网页版 ChatGPT 免费账户的生图能力接进 DSH（含图生图、生视频与 Web 设置页）。",
+    "version": "0.3.0",
+    "description": "DeepSeek Harness 插件：把网页版豆包与网页版 ChatGPT 免费账户的生图能力接进 DSH（含图生图、生视频与 Web 设置页）。新增：灵感库中文译文与全局中英切换、灵感图落盘缓存、标签栏位置、灵感图放大查看（纯看图）、画廊标签页与滚动位置记忆。",
     "type": "module",
     "main": "index.js",
     "exports": {

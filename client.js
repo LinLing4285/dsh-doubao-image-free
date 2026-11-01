@@ -3228,6 +3228,9 @@ window.__ModuleLoader__.load({
       return h(mod.Mount, props);
     }
 
+    /** 画廊在 `conversation.view` 里的排序位（见注册处注释）。 */
+    var VIEW_ORDER_GALLERY = 22;
+
     /**
      * @param {object} ctx Cordis 上下文
      */
@@ -3339,13 +3342,18 @@ window.__ModuleLoader__.load({
        * `conversation.view` 是 **list 槽**、`scope: session`、
        * 注册参数 `{id, order?, label?}` —— **没有 key**
        * （传 `key` 会注册失败）。官方 dsh-image-gen 用
-       * `id: "gallery"` / `order: 20`（`lib/client.js:125553`），这里沿用同一形态。
+       * `id: "gallery"` / `order: 20`（`lib/client.js:125553`）。
+       *
+       * **order 为什么是 22 而不是官方的 20**：20 这个位子别的插件也在用
+       * （会话页常见的自定义视图多从 20 起步），同 order 时相对次序取决于
+       * 注册先后，画廊会随机夹在别人中间。取 22 就是主动让开一格：排在
+       * 常见视图（20 / 21）之后、「上下文」这类收尾视图（30）之前。
        */
       ctx.slots.inject("conversation.view", function () {
         return ctx.slots.register({
           name: "conversation.view",
           id: "doubao-gallery",
-          order: 20,
+          order: VIEW_ORDER_GALLERY,
           label: function () { return t("galleryTitle"); },
           locale: NS,
         }, function (props) {
@@ -3488,6 +3496,8 @@ window.__ModuleLoader__.load({
        * 「永远不写工作区」——出图照常，只是画廊筛选再也收不到工作区。
        * 只有能拿到 `shared` 本身，自测才能守住这条接线。
        */
+      /* 画廊在会话页标签栏里的排序位（离线自测断言用）。 */
+      VIEW_ORDER_GALLERY: VIEW_ORDER_GALLERY,
       shared: shared,
     };
     return module.exports;
